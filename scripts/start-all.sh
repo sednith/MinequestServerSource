@@ -26,12 +26,9 @@ if ! command -v ss >/dev/null 2>&1; then
     exit 1
 fi
 
-# DEV and PROD can run on the same Unix account. Separate Screen socket
-# directories let both environments use the required session names (e.g. playworld).
-SCREEN_SOCKET_DIR="$PROJECT_ROOT/.screen"
-mkdir -p "$SCREEN_SOCKET_DIR"
-chmod 700 "$SCREEN_SOCKET_DIR"
-export SCREENDIR="$SCREEN_SOCKET_DIR"
+# Use the account's normal Screen socket so sessions created by previous runs
+# are visible and cannot be accidentally duplicated in an isolated socket dir.
+unset SCREENDIR
 
 for server in "${SERVER_START_ORDER[@]}"; do
     resolve_server "$server" || exit $?
@@ -45,6 +42,12 @@ done
 screen_session_exists() {
     local server="$1"
     screen -list 2>/dev/null | grep -Eq "^[[:space:]]*[0-9]+\\.${server}[[:space:]]+\\("
+}
+
+legacy_isolated_session_exists() {
+    local server="$1"
+    SCREENDIR="$PROJECT_ROOT/.screen" screen -list 2>/dev/null \
+        | grep -Eq "^[[:space:]]*[0-9]+\\.${server}[[:space:]]+\\("
 }
 
 server_listens_on_configured_port() {
@@ -61,6 +64,24 @@ server_listens_on_configured_port() {
     ss -H -ltn 2>/dev/null | awk -v suffix=":$port" '$4 ~ (suffix "$" ) { found=1 } END { exit !found }'
 }
 
+server_listener_pid() {
+    local server="$1"
+    local port
+
+    if [[ "$server" == velocity ]]; then
+        port="$(sed -nE 's/^[[:space:]]*bind[[:space:]]*=[[:space:]]*"[^":]*:([0-9]+)".*/\1/p' "$PROJECT_ROOT/$server/velocity.toml" | head -n 1)"
+    else
+        port="$(sed -nE 's/^[[:space:]]*server-port=([0-9]+).*/\1/p' "$PROJECT_ROOT/$server/server.properties" | tail -n 1)"
+    fi
+
+    [[ "$port" =~ ^[0-9]+$ ]] || return 1
+    ss -H -ltnp 2>/dev/null \
+        | awk -v suffix=":$port" '$4 ~ (suffix "$" )' \
+        | grep -oE 'pid=[0-9]+' \
+        | head -n 1 \
+        | cut -d= -f2
+}
+
 wait_for_existing_server() {
     local server="$1"
     local server_dir="$2"
@@ -68,13 +89,18 @@ wait_for_existing_server() {
     local elapsed=0
 
     while (( elapsed < START_TIMEOUT )); do
-        if ! screen_session_exists "$server" || ! server_pid_is_valid "$pid" "$server_dir"; then
-            log "[ERROR] Существующая сессия $server пропала или её PID больше не соответствует ядру"
+        if ! screen_session_exists "$server"; then
+            log "[ERROR] Существующая Screen-сессия $server пропала"
             return 1
         fi
         if server_listens_on_configured_port "$server"; then
-            log "[OK] $server уже запущен: Screen-сессия и PID $pid активны, порт слушается"
-            return 0
+            pid="$(server_listener_pid "$server")"
+            if [[ -n "$pid" ]] && server_pid_is_valid "$pid" "$server_dir"; then
+                log "[OK] $server уже запущен: Screen-сессия активна, PID $pid соответствует ядру и порт слушается"
+                return 0
+            fi
+            log "[ERROR] Порт $server слушается, но PID процесса не удалось подтвердить; ничего не останавливалось"
+            return 1
         fi
         sleep "$CHECK_INTERVAL"
         ((elapsed += CHECK_INTERVAL))
@@ -96,18 +122,26 @@ start_and_wait() {
     resolve_server "$server" || return $?
     resolve_server_jar || return 1
 
+    if legacy_isolated_session_exists "$server"; then
+        log "[ERROR] Найдена старая изолированная Screen-сессия $server в $PROJECT_ROOT/.screen; проверьте её вручную перед повторным запуском"
+        return 1
+    fi
+
     if screen_session_exists "$server"; then
-        if [[ ! -s "$server_dir/.server.pid" ]]; then
-            log "[ERROR] Screen-сессия $server уже существует, но валидного PID-файла нет; требуется ручная проверка"
-            return 1
-        fi
-        pid="$(cat "$server_dir/.server.pid")"
-        if ! server_pid_is_valid "$pid" "$server_dir"; then
-            log "[ERROR] Screen-сессия $server существует, но PID не соответствует серверу; ничего не останавливалось"
-            return 1
-        fi
-        wait_for_existing_server "$server" "$server_dir" "$pid"
+        wait_for_existing_server "$server" "$server_dir" ""
         return $?
+    fi
+
+    if server_listens_on_configured_port "$server"; then
+        pid="$(server_listener_pid "$server")"
+        if server_pid_is_valid "$pid" "$server_dir"; then
+            log "[ERROR] $server уже работает (PID $pid), но Screen-сессии '$server' нет; второй экземпляр не запускаю"
+        elif [[ -z "$pid" ]]; then
+            log "[ERROR] Порт $server уже занят, но PID не удалось определить; второй экземпляр не запускаю"
+        else
+            log "[ERROR] Порт $server уже занят процессом PID $pid; второй экземпляр не запускаю"
+        fi
+        return 1
     fi
 
     if [[ -s "$server_dir/.server.pid" ]]; then
