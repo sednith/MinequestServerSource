@@ -1,4 +1,5 @@
-server.properties:#.*[0-9]{4}
+playworld/server.properties:#.*[0-9]{4}
+adjustment/server.properties:#.*[0-9]{4}
 overrides/
 .checkerignore
 scripts/checker.sh

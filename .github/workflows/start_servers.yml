@@ -1,0 +1,52 @@
+name: Start Minecraft Servers
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to start
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+
+concurrency:
+  group: minecraft-server-deploy
+  cancel-in-progress: false
+
+env:
+  DEV_SERVER_DIR: /home/server/dev
+  PROD_SERVER_DIR: /home/server/prod
+
+jobs:
+  start:
+    name: Start ${{ inputs.environment }} servers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start servers over SSH
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          TARGET_ENV: ${{ inputs.environment }}
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          envs: TARGET_ENV,DEV_SERVER_DIR,PROD_SERVER_DIR
+          script: |
+            set -euo pipefail
+
+            case "$TARGET_ENV" in
+              dev) SERVER_DIR="$DEV_SERVER_DIR" ;;
+              prod) SERVER_DIR="$PROD_SERVER_DIR" ;;
+              *) echo "[ERROR] Unsupported environment: $TARGET_ENV" >&2; exit 2 ;;
+            esac
+
+            if [ ! -d "$SERVER_DIR" ]; then
+              echo "[ERROR] Server directory does not exist: $SERVER_DIR" >&2
+              exit 1
+            fi
+
+            cd "$SERVER_DIR"
+            bash ./scripts/start-all.sh

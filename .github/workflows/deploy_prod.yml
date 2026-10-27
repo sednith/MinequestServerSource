@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  PROD_DIR: "/home/server/minetest"
+  PROD_DIR: "/home/server/prod"
   DEV_DIR: "/home/server/dev"
 
 concurrency:

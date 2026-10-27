@@ -84,7 +84,13 @@ if [[ -z "$NEW_PID" ]]; then
 fi
 
 log "[INFO] Новый процесс $SERVER_NAME запущен: PID $NEW_PID (предыдущий: $OLD_PID)"
-log "[INFO] Ожидание готовности по сообщению 'Done ... For help' в логе"
+if [[ "$SERVER_KIND" == velocity ]]; then
+    READY_PATTERN='Done \([0-9.]+s\)!'
+    log "[INFO] Ожидание готовности Velocity по сообщению 'Done (...)!' в логе"
+else
+    READY_PATTERN='Done.*For help'
+    log "[INFO] Ожидание готовности Paper по сообщению 'Done ... For help' в логе"
+fi
 
 ELAPSED=0
 while (( ELAPSED < TIMEOUT )); do
@@ -102,7 +108,7 @@ while (( ELAPSED < TIMEOUT )); do
         fi
 
         START_BYTE=$((LOG_SIZE_BEFORE + 1))
-        if tail -c "+$START_BYTE" "$LOG_FILE" 2>/dev/null | grep -qE 'Done.*For help'; then
+        if tail -c "+$START_BYTE" "$LOG_FILE" 2>/dev/null | grep -qE "$READY_PATTERN"; then
             log "[OK] $SERVER_NAME успешно загружен за ${ELAPSED}с (PID $NEW_PID)"
             exit 0
         fi

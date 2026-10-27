@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/common.sh"
 OVERRIDES_DIR="$PROJECT_ROOT/overrides"
 
 echo "========================================="
-echo "  Применение локальных overrides ко всем серверам"
+echo "  Применение локальных overrides по путям из корня репозитория"
 echo "========================================="
 
 if ! command -v yq >/dev/null 2>&1; then
@@ -34,47 +34,67 @@ errors=0
 while IFS= read -r -d '' override_file; do
     relative_path="${override_file#"$OVERRIDES_DIR"/}"
 
-    for server_dir in "${SERVER_DIRS[@]}"; do
-        base_file="$server_dir/$relative_path"
-
-        echo ""
-        echo "[INFO] Обработка $(basename -- "$server_dir"): $relative_path"
-        if [[ ! -f "$base_file" ]]; then
-            echo "       [WARN] Базовый файл не найден, пропуск"
-            ((skipped += 1))
-            continue
-        fi
-
-        if [[ "$base_file" == *.yml || "$base_file" == *.yaml || "$base_file" == *.json ]]; then
-            if yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' "$base_file" "$override_file" > "${base_file}.tmp" 2>/dev/null; then
-                mv -- "${base_file}.tmp" "$base_file"
-                echo "       [OK] YAML/JSON override применён"
-                ((applied += 1))
-            else
-                rm -f -- "${base_file}.tmp"
-                echo "       [ERROR] Ошибка применения YAML/JSON override"
+    # Override paths mirror repository paths (e.g. playworld/plugins/...).
+    # Resolve each file once from the repository root, then ensure it belongs
+    # to exactly one discovered server instead of appending it to every server.
+    base_file="$PROJECT_ROOT/$relative_path"
+    server_dir=""
+    for candidate_server_dir in "${SERVER_DIRS[@]}"; do
+        if [[ "$base_file" == "$candidate_server_dir"/* ]]; then
+            if [[ -n "$server_dir" ]]; then
+                echo "[ERROR] Путь override соответствует нескольким серверам: $relative_path"
                 ((errors += 1))
+                server_dir=""
+                break
             fi
-        elif [[ "$base_file" == *.properties ]]; then
-            prop_ok=true
-            for key in $(yq e 'keys | .[]' "$override_file" 2>/dev/null); do
-                value=$(yq e ".\"$key\"" "$override_file" 2>/dev/null)
-                if ! yq -i ".\"$key\" = \"$value\"" "$base_file" 2>/dev/null; then
-                    echo "       [ERROR] Ошибка применения ключа: $key"
-                    prop_ok=false
-                fi
-            done
-            if [[ "$prop_ok" == true ]]; then
-                echo "       [OK] Properties override применён"
-                ((applied += 1))
-            else
-                ((errors += 1))
-            fi
-        else
-            echo "       [WARN] Неизвестный формат файла, пропуск"
-            ((skipped += 1))
+            server_dir="$candidate_server_dir"
         fi
     done
+
+    if [[ -z "$server_dir" ]]; then
+        echo "[WARN] Override не относится к каталогу найденного сервера, пропуск: $relative_path"
+        ((skipped += 1))
+        continue
+    fi
+
+    echo ""
+    echo "[INFO] Обработка $(basename -- "$server_dir"): $relative_path"
+    if [[ ! -f "$base_file" ]]; then
+        echo "       [WARN] Базовый файл не найден, пропуск"
+        ((skipped += 1))
+        continue
+    fi
+
+    if [[ "$base_file" == *.yml || "$base_file" == *.yaml || "$base_file" == *.json ]]; then
+        if yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' "$base_file" "$override_file" > "${base_file}.tmp" 2>/dev/null; then
+            mv -- "${base_file}.tmp" "$base_file"
+            echo "       [OK] YAML/JSON override применён"
+            ((applied += 1))
+        else
+            rm -f -- "${base_file}.tmp"
+            echo "       [ERROR] Ошибка применения YAML/JSON override"
+            ((errors += 1))
+        fi
+    elif [[ "$base_file" == *.properties ]]; then
+        prop_ok=true
+        while IFS= read -r key; do
+            [[ -z "$key" ]] && continue
+            value=$(yq e ".\"$key\"" "$override_file" 2>/dev/null)
+            if ! yq -i ".\"$key\" = \"$value\"" "$base_file" 2>/dev/null; then
+                echo "       [ERROR] Ошибка применения ключа: $key"
+                prop_ok=false
+            fi
+        done < <(yq e 'keys | .[]' "$override_file" 2>/dev/null)
+        if [[ "$prop_ok" == true ]]; then
+            echo "       [OK] Properties override применён"
+            ((applied += 1))
+        else
+            ((errors += 1))
+        fi
+    else
+        echo "       [WARN] Неизвестный формат файла, пропуск"
+        ((skipped += 1))
+    fi
 done < <(find "$OVERRIDES_DIR" -type f -print0 | sort -z)
 
 echo ""

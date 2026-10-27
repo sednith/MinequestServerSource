@@ -10,13 +10,10 @@ if (( $# != 0 )); then
     exit 2
 fi
 
-# Порядок рестарта задаётся здесь. Добавьте имена папок серверов в нужной
-# последовательности; каждая папка должна содержать java-args и один JAR.
 SERVER_START_ORDER=(
-    "__SET_ORDER__"
-    # "lobby"
-    # "mainworld"
-    # "velocity"
+    "playworld"
+    "adjustment"
+    "velocity"
 )
 
 validate_server_order() {
@@ -27,8 +24,8 @@ validate_server_order() {
     local i
     local j
 
-    if (( ${#SERVER_START_ORDER[@]} == 1 )) && [[ "${SERVER_START_ORDER[0]}" == "__SET_ORDER__" ]]; then
-        log "[ERROR] Массив SERVER_START_ORDER не настроен. Укажите папки серверов в начале deploy-dev.sh"
+    if (( ${#SERVER_START_ORDER[@]} == 0 )); then
+        log "[ERROR] Массив SERVER_START_ORDER пуст"
         return 1
     fi
 

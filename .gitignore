@@ -6,6 +6,7 @@
 logs/
 **/.server.pid
 **/server_console
+.screen/
 ops.json
 **/plugins/spark/
 usercache.json
