@@ -75,6 +75,16 @@ while IFS= read -r -d '' override_file; do
             echo "       [ERROR] Ошибка применения YAML/JSON override"
             ((errors += 1))
         fi
+    elif [[ "$base_file" == *.toml ]]; then
+        if yq eval-all --input-format toml --output-format toml 'select(fileIndex == 0) * select(fileIndex == 1)' "$base_file" "$override_file" > "${base_file}.tmp" 2>/dev/null; then
+            mv -- "${base_file}.tmp" "$base_file"
+            echo "       [OK] TOML override применён"
+            ((applied += 1))
+        else
+            rm -f -- "${base_file}.tmp"
+            echo "       [ERROR] Ошибка применения TOML override"
+            ((errors += 1))
+        fi
     elif [[ "$base_file" == *.properties ]]; then
         prop_ok=true
         while IFS= read -r key; do
