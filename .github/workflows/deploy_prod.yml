@@ -1,0 +1,104 @@
+name: Deploy to Production
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  PROD_DIR: "/home/server/minetest"
+  DEV_DIR: "/home/server/dev"
+
+concurrency:
+  group: minecraft-server-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy PROD and sync DEV via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          envs: PROD_DIR,DEV_DIR
+          script: |
+            set -euo pipefail
+
+            echo "========================================="
+            echo "  Деплой новой версии на PROD"
+            echo "========================================="
+
+            # Проверка существования директорий
+            if [ ! -d "$PROD_DIR" ]; then
+              echo "[ERROR] PROD_DIR не существует: $PROD_DIR"
+              exit 1
+            fi
+            if [ ! -d "$DEV_DIR" ]; then
+              echo "[ERROR] DEV_DIR не существует: $DEV_DIR"
+              exit 1
+            fi
+
+            echo ""
+            echo "[ЭТАП 1/3] Обновление PROD окружения..."
+            echo "-----------------------------------------"
+            
+            cd "$PROD_DIR"
+            
+            echo "[INFO] Получение изменений и тегов..."
+            git fetch origin --tags
+            
+            echo "[INFO] Принудительный сброс к origin/main..."
+            git checkout -f -B main origin/main
+            git reset --hard origin/main
+            
+            echo "[OK] PROD файлы обновлены до актуального main"
+
+            echo ""
+            echo "[ЭТАП 2/3] Синхронизация DEV с PROD..."
+            echo "-----------------------------------------"
+            
+            cd "$DEV_DIR"
+
+            echo "[INFO] Получение изменений..."
+            git fetch origin
+            
+            echo "[INFO] Сброс локальной dev к origin/dev..."
+            git checkout -f -B dev origin/dev
+            
+            # Проверяем, есть ли в main новые коммиты, которых нет в dev
+            if git merge-base --is-ancestor origin/main HEAD; then
+              echo "[INFO] Ветка dev уже содержит все изменения из main. Мерж не требуется."
+            else
+              echo "[INFO] Выполнение слияния main -> dev (перенос hotfix-ов)..."
+            
+              # --no-ff гарантирует создание коммита слияния, [skip ci] предотвращает запуск dev-пайплайна
+              if ! git merge --no-ff --no-edit -m "chore: sync main into dev [skip ci]" origin/main; then
+                echo "[ERROR] Обнаружен конфликт при слиянии main в dev!"
+                echo "[ERROR] Откат слияния (git merge --abort)..."
+                git merge --abort
+                echo "[WARN] PROD обновлен, но DEV остановлен из-за конфликта. Требуется ручное разрешение."
+                exit 1
+              fi
+            
+              echo "[INFO] Отправка обновленной ветки dev в репозиторий..."
+              git push origin dev
+              echo "[OK] Ветка dev успешно синхронизирована с main"
+            fi
+
+            echo ""
+            echo "[ЭТАП 3/3] DEV: deploy servers in configured order"
+            echo "-----------------------------------------"
+            
+            cd "$DEV_DIR"
+            bash ./scripts/deploy-dev.sh
+
+            echo ""
+            echo "========================================="
+            echo "[OK] ДЕПЛОЙ НА PROD УСПЕШНО ЗАВЕРШЕН!"
+            echo "[OK] DEV СИНХРОНИЗИРОВАН И ПЕРЕЗАПУЩЕН!"
+            echo "========================================="

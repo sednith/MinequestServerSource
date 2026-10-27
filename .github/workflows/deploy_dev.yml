@@ -1,0 +1,31 @@
+name: Deploy Dev Environment
+
+on:
+  push:
+    branches:
+      - dev
+
+concurrency:
+  group: minecraft-server-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy_dev:
+    name: "Deploy to Dev"
+    runs-on: ubuntu-latest
+    env:
+      DEV_SERVER_DIR: /home/server/dev
+
+    steps:
+      - name: Deploy pipeline
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          envs: DEV_SERVER_DIR
+          script: |
+            set -euo pipefail
+            cd "$DEV_SERVER_DIR"
+            bash ./scripts/deploy-dev.sh

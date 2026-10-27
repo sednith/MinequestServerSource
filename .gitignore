@@ -1,0 +1,41 @@
+.idea/
+**/.paper/console_history
+**/.console_history
+/velocity/forwarding.secret
+/velocity/lang/
+logs/
+**/.server.pid
+**/server_console
+ops.json
+**/plugins/spark/
+usercache.json
+crash-reports/
+cache/
+
+# Downloaded Paper runtime dependencies and version copies
+/playworld/libraries/
+/playworld/versions/
+/adjustment/libraries/
+/adjustment/versions/
+.cache/
+
+overrides/
+checker-report/
+# WORLD
+**/world/*
+!**/world/dimensions/
+**/world/dimensions/*
+!**/world/dimensions/minecraft/
+**/world/dimensions/minecraft/*
+# Overworld
+!**/world/dimensions/minecraft/overworld/
+**/world/dimensions/minecraft/overworld/*
+!**/world/dimensions/minecraft/overworld/paper-world.yml
+# The End
+!**/world/dimensions/minecraft/the_end/
+**/world/dimensions/minecraft/the_end/*
+!**/world/dimensions/minecraft/the_end/paper-world.yml
+# Nether
+!**/world/dimensions/minecraft/the_nether/
+**/world/dimensions/minecraft/the_nether/*
+!**/world/dimensions/minecraft/the_nether/paper-world.yml

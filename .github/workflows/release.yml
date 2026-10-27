@@ -1,0 +1,80 @@
+name: Release Management
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Выберите тип обновления версии:'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  merge-and-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync and Merge
+        run: |
+          git fetch origin main dev
+          git checkout main
+          # Грамотное сообщение коммита слияния с пропуском повторных проверок CI
+          git merge origin/dev --no-ff -m "release: merge branch 'dev' into 'main' [skip ci]"
+
+      - name: Calculate and Push New Tag
+        run: |
+          # 1. Получаем последний тег. Если тегов нет, берем v1.0.0
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+          echo "[INFO] Текущая версия в репозитории: $LATEST_TAG"
+          
+          # 2. Убираем букву 'v' и разбиваем на компоненты
+          VERSION_CLEAN=${LATEST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_CLEAN"
+          
+          # 3. Читаем выбор пользователя из интерфейса GitHub
+          CHOICE="${{ github.event.inputs.release_type }}"
+          echo "[INFO] Выбран тип релиза: $CHOICE"
+          
+          # 4. Логика изменения цифр в зависимости от выбора (SemVer)
+          if [ "$CHOICE" = "major" ]; then
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+          elif [ "$CHOICE" = "minor" ]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+          else
+              PATCH=$((PATCH + 1))
+          fi
+          
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+          echo "[INFO] Сгенерирован новый тег: $NEW_TAG"
+          
+          # 5. ГЕНЕРАЦИЯ СПИСКА ИЗМЕНЕНИЙ (CHANGELOG) 
+          # Берем коммиты между прошлым тегом и текущим состоянием, форматируем списком.
+          # Исключаем из списка сам технический коммит релиза ([skip ci]), чтобы не мусорить.
+          CHANGELOG=$(git log ${LATEST_TAG}..HEAD --oneline --pretty=format:"- %s" | grep -v "\[skip ci\]" || echo "- Мелкие правки и улучшения")
+          
+          echo -e "[INFO] Сформирован список изменений:\n$CHANGELOG"
+          
+          # 6. Создаем аннотированный тег, где первый -m — заголовок, а второй — наш Changelog
+          git tag -a "$NEW_TAG" -m "Release $NEW_TAG ($CHOICE)" -m "$CHANGELOG"
+          
+          # 7. Пушим изменения в ветку main и отправляем созданный тег на GitHub
+          git push origin main
+          git push origin "$NEW_TAG"
+          echo "[OK] Релиз $NEW_TAG успешно выпущен!"
