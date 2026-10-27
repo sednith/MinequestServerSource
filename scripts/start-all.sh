@@ -7,15 +7,18 @@ source "$SCRIPT_DIR/common.sh"
 SERVER_START_ORDER=(playworld adjustment velocity)
 START_TIMEOUT=300
 CHECK_INTERVAL=2
+TARGET_ENV="${1:-}"
+SESSION_PREFIX=""
 
 usage() {
-    echo "Использование: bash scripts/start-all.sh" >&2
+    echo "Использование: bash scripts/start-all.sh <dev|prod>" >&2
 }
 
-if (( $# != 0 )); then
+if (( $# != 1 )) || [[ "$TARGET_ENV" != dev && "$TARGET_ENV" != prod ]]; then
     usage
     exit 2
 fi
+SESSION_PREFIX="$TARGET_ENV-"
 
 if ! command -v screen >/dev/null 2>&1; then
     log "[ERROR] GNU Screen не найден в PATH"
@@ -40,8 +43,8 @@ for server in "${SERVER_START_ORDER[@]}"; do
 done
 
 screen_session_exists() {
-    local server="$1"
-    screen -list 2>/dev/null | grep -Eq "^[[:space:]]*[0-9]+\\.${server}[[:space:]]+\\("
+    local session_name="$1"
+    screen -list 2>/dev/null | grep -Eq "^[[:space:]]*[0-9]+\\.${session_name}[[:space:]]+\\("
 }
 
 legacy_isolated_session_exists() {
@@ -85,12 +88,12 @@ server_listener_pid() {
 wait_for_existing_server() {
     local server="$1"
     local server_dir="$2"
-    local pid="$3"
+    local session_name="$3"
     local elapsed=0
 
     while (( elapsed < START_TIMEOUT )); do
-        if ! screen_session_exists "$server"; then
-            log "[ERROR] Существующая Screen-сессия $server пропала"
+        if ! screen_session_exists "$session_name"; then
+            log "[ERROR] Существующая Screen-сессия $session_name пропала"
             return 1
         fi
         if server_listens_on_configured_port "$server"; then
@@ -127,15 +130,26 @@ start_and_wait() {
         return 1
     fi
 
-    if screen_session_exists "$server"; then
-        wait_for_existing_server "$server" "$server_dir" ""
+    if screen_session_exists "${SESSION_PREFIX}${server}"; then
+        wait_for_existing_server "$server" "$server_dir" "${SESSION_PREFIX}${server}"
         return $?
+    fi
+
+    # Accept an older unprefixed session only when its listener belongs to this
+    # environment's server directory and configured port. A different environment
+    # may still have a legacy session with the same server name.
+    if screen_session_exists "$server"; then
+        pid="$(server_listener_pid "$server")"
+        if [[ -n "$pid" ]] && server_pid_is_valid "$pid" "$server_dir"; then
+            wait_for_existing_server "$server" "$server_dir" "$server"
+            return $?
+        fi
     fi
 
     if server_listens_on_configured_port "$server"; then
         pid="$(server_listener_pid "$server")"
         if server_pid_is_valid "$pid" "$server_dir"; then
-            log "[ERROR] $server уже работает (PID $pid), но Screen-сессии '$server' нет; второй экземпляр не запускаю"
+            log "[ERROR] $server уже работает (PID $pid), но Screen-сессии '${SESSION_PREFIX}${server}' нет; второй экземпляр не запускаю"
         elif [[ -z "$pid" ]]; then
             log "[ERROR] Порт $server уже занят, но PID не удалось определить; второй экземпляр не запускаю"
         else
@@ -156,9 +170,9 @@ start_and_wait() {
         log_size_before="$(wc -c < "$log_file")"
     fi
 
-    log "[INFO] Запуск $server в Screen-сессии '$server'"
-    if ! screen -dmS "$server" bash "$SCRIPT_DIR/startserver.sh" "$server"; then
-        log "[ERROR] Не удалось создать Screen-сессию $server"
+    log "[INFO] Запуск $server в Screen-сессии '${SESSION_PREFIX}${server}'"
+    if ! screen -dmS "${SESSION_PREFIX}${server}" bash "$SCRIPT_DIR/startserver.sh" "$server"; then
+        log "[ERROR] Не удалось создать Screen-сессию ${SESSION_PREFIX}${server}"
         return 1
     fi
 
@@ -169,8 +183,8 @@ start_and_wait() {
     fi
 
     while (( elapsed < START_TIMEOUT )); do
-        if ! screen_session_exists "$server"; then
-            log "[ERROR] Screen-сессия $server завершилась до подтверждения готовности"
+        if ! screen_session_exists "${SESSION_PREFIX}${server}"; then
+            log "[ERROR] Screen-сессия ${SESSION_PREFIX}${server} завершилась до подтверждения готовности"
             [[ -f "$log_file" ]] && tail -n 30 "$log_file"
             return 1
         fi
@@ -211,6 +225,7 @@ start_and_wait() {
     return 1
 }
 
+log "[INFO] Окружение: $TARGET_ENV"
 log "[INFO] Последовательный запуск серверов: ${SERVER_START_ORDER[*]}"
 for server in "${SERVER_START_ORDER[@]}"; do
     if ! start_and_wait "$server"; then

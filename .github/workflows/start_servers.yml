@@ -49,4 +49,4 @@ jobs:
             fi
 
             cd "$SERVER_DIR"
-            bash ./scripts/start-all.sh
+            bash ./scripts/start-all.sh "$TARGET_ENV"
