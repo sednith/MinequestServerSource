@@ -42,6 +42,11 @@ for server in "${SERVER_START_ORDER[@]}"; do
     fi
 done
 
+if [[ "$TARGET_ENV" == dev ]]; then
+    log "[INFO] DEV: применяю overrides перед запуском серверов"
+    bash "$SCRIPT_DIR/apply-overrides.sh"
+fi
+
 screen_session_exists() {
     local session_name="$1"
     screen -list 2>/dev/null | grep -Eq "^[[:space:]]*[0-9]+\\.${session_name}[[:space:]]+\\("

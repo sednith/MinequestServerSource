@@ -85,6 +85,78 @@ while IFS= read -r -d '' override_file; do
             echo "       [ERROR] Ошибка применения TOML override"
             ((errors += 1))
         fi
+    elif [[ "$(basename -- "$base_file")" == java-args ]]; then
+        override_xmx=""
+        override_count=0
+        override_invalid=false
+        while IFS= read -r arg || [[ -n "$arg" ]]; do
+            arg="${arg//$'\r'/}"
+            arg="${arg#"${arg%%[![:space:]]*}"}"
+            arg="${arg%"${arg##*[![:space:]]}"}"
+            [[ -z "$arg" || "$arg" == \#* ]] && continue
+
+            if [[ "$arg" =~ ^-Xmx[0-9]+([kKmMgG])?$ ]]; then
+                override_xmx="$arg"
+                ((override_count += 1))
+            else
+                echo "       [ERROR] Override java-args должен содержать только один параметр -Xmx<размер>; некорректная строка: $arg"
+                override_invalid=true
+            fi
+        done < "$override_file"
+
+        if [[ "$override_invalid" == true ]]; then
+            ((errors += 1))
+            continue
+        fi
+        if (( override_count == 0 )); then
+            echo "       [ERROR] В override java-args не найден параметр -Xmx"
+            ((errors += 1))
+            continue
+        elif (( override_count > 1 )); then
+            echo "       [ERROR] В override java-args указано несколько параметров -Xmx ($override_count)"
+            ((errors += 1))
+            continue
+        fi
+
+        read -r base_xmx_count base_xmx_malformed < <(
+            awk '
+                /^[[:space:]]*#/ { next }
+                {
+                    for (i = 1; i <= NF; i++) {
+                        if ($i ~ /^-Xmx/) {
+                            if ($i ~ /^-Xmx[0-9]+([kKmMgG])?$/) count++
+                            else malformed++
+                        }
+                    }
+                }
+                END { print count + 0, malformed + 0 }
+            ' "$base_file"
+        )
+        if (( base_xmx_malformed > 0 )); then
+            echo "       [ERROR] В базовом java-args найден некорректный параметр -Xmx"
+            ((errors += 1))
+            continue
+        elif (( base_xmx_count == 0 )); then
+            echo "       [ERROR] В базовом java-args отсутствует параметр -Xmx; override не добавляет новые параметры"
+            ((errors += 1))
+            continue
+        elif (( base_xmx_count > 1 )); then
+            echo "       [ERROR] В базовом java-args найдено несколько параметров -Xmx ($base_xmx_count); замена неоднозначна"
+            ((errors += 1))
+            continue
+        fi
+
+        tmp_file="$(mktemp "${base_file}.tmp.XXXXXX")"
+        if sed -E '/^[[:space:]]*#/! s/(^|[[:space:]])-Xmx[^[:space:]]*/\1'"$override_xmx"'/' "$base_file" > "$tmp_file" \
+            && chmod --reference="$base_file" "$tmp_file" \
+            && mv -- "$tmp_file" "$base_file"; then
+            echo "       [OK] Параметр -Xmx заменён на $override_xmx; остальные аргументы сохранены"
+            ((applied += 1))
+        else
+            rm -f -- "$tmp_file"
+            echo "       [ERROR] Ошибка обновления параметра -Xmx"
+            ((errors += 1))
+        fi
     elif [[ "$base_file" == *.properties ]]; then
         prop_ok=true
         while IFS= read -r key; do
