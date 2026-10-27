@@ -159,7 +159,7 @@ start_and_wait() {
             fi
             start_byte=$((log_size_before + 1))
             if tail -c "+$start_byte" "$log_file" 2>/dev/null | grep -qE "$ready_pattern"; then
-                if [[ -z "$pid" || ! server_pid_is_valid "$pid" "$server_dir" ]]; then
+                if [[ -z "$pid" ]] || ! server_pid_is_valid "$pid" "$server_dir"; then
                     log "[ERROR] Найден маркер готовности $server, но PID не подтверждён"
                     return 1
                 fi
