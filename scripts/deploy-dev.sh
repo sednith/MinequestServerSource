@@ -164,12 +164,7 @@ echo ""
 echo "[STAGE 2/4] Restart Servers In Configured Order"
 echo "-----------------------------------------"
 
-for server in "${SERVER_START_ORDER[@]}"; do
-    echo ""
-    echo "[INFO] Перезапуск сервера '$server' с проверкой готовности..."
-    bash "$SCRIPT_DIR/restart.sh" "$server"
-    echo "[OK] Сервер '$server' успешно перезапущен и проверен"
-done
+bash "$SCRIPT_DIR/restart.sh" dev
 
 echo "[OK] Stage 2 завершена: все серверы готовы"
 
