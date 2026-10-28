@@ -8,6 +8,9 @@ logs/
 **/server_console
 .screen/
 ops.json
+**/banned-ips.json
+**/banned-players.json
+**/whitelist.json
 **/plugins/spark/
 usercache.json
 crash-reports/
