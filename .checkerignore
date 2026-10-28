@@ -3,3 +3,7 @@ adjustment/server.properties:#.*[0-9]{4}
 overrides/
 .checkerignore
 scripts/checker.sh
+ playworld/server.properties:management-server-secret
+adjustment/server.properties:management-server-secret
+playworld/config/paper-global.yml:#^[[:space:]]*secret:.*$
+adjustment/config/paper-global.yml:#^[[:space:]]*secret:.*$

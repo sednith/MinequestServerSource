@@ -10,12 +10,40 @@ REPORT_DIR="$PROJECT_ROOT/checker-report"
 mkdir -p "$REPORT_DIR"
 
 echo "========================================="
-echo "  Checker: Сравнение состояния B и C"
+echo "  Checker: Проверка изменений после запуска серверов"
 echo "========================================="
 
-# 1. Сохраняем артефакты
-git status --porcelain > "$REPORT_DIR/git-status.txt"
-git diff HEAD > "$REPORT_DIR/git-diff.txt"
+# 1. Compare with the post-render/pre-restart snapshot where available. This
+# excludes our own secret rendering and leaves only changes made after startup.
+: > "$REPORT_DIR/git-status.txt"
+while IFS= read -r status_line || [[ -n "$status_line" ]]; do
+    [[ -z "$status_line" ]] && continue
+    file_path="${status_line:3}"
+    baseline_file="${CHECKER_BASELINE_DIR:-}/$file_path"
+    if [[ -n "${CHECKER_BASELINE_DIR:-}" && -f "$baseline_file" && -f "$PROJECT_ROOT/$file_path" ]]; then
+        cmp -s -- "$baseline_file" "$PROJECT_ROOT/$file_path" && continue
+    fi
+    printf '%s\n' "$status_line" >> "$REPORT_DIR/git-status.txt"
+done < <(git status --porcelain)
+
+# Keep a full diff for local diagnosis, but redact sensitive values. Files in
+# the manifest are diffed against the rendered baseline instead of commit B.
+{
+    while IFS= read -r status_line || [[ -n "$status_line" ]]; do
+        [[ -z "$status_line" ]] && continue
+        file_path="${status_line:3}"
+        baseline_file="${CHECKER_BASELINE_DIR:-}/$file_path"
+        if [[ -n "${CHECKER_BASELINE_DIR:-}" && -f "$baseline_file" ]]; then
+            if [[ -f "$PROJECT_ROOT/$file_path" ]]; then
+                diff -u --label "a/$file_path" --label "b/$file_path" -- "$baseline_file" "$PROJECT_ROOT/$file_path" || true
+            else
+                diff -u --label "a/$file_path" --label "b/$file_path" -- "$baseline_file" /dev/null || true
+            fi
+        elif [[ "${status_line:0:2}" != "??" ]]; then
+            git diff --no-ext-diff --no-color HEAD -- "$file_path"
+        fi
+    done < "$REPORT_DIR/git-status.txt"
+} | python3 "$SCRIPT_DIR/redact-diff.py" > "$REPORT_DIR/git-diff.txt"
 
 # 2. Если изменений нет — всё отлично
 if [ ! -s "$REPORT_DIR/git-status.txt" ]; then
@@ -115,6 +143,20 @@ is_line_allowed_by_regex() {
 
 HAS_UNKNOWN_CHANGES=false
 
+diff_added_lines() {
+    local file="$1"
+    local baseline_file="${CHECKER_BASELINE_DIR:-}/$file"
+    if [[ -n "${CHECKER_BASELINE_DIR:-}" && -f "$baseline_file" ]]; then
+        if [[ -f "$PROJECT_ROOT/$file" ]]; then
+            diff -u -- "$baseline_file" "$PROJECT_ROOT/$file" || true
+        else
+            diff -u -- "$baseline_file" /dev/null || true
+        fi
+    else
+        git diff HEAD -- "$file"
+    fi | grep '^+[^+]' | sed 's/^+//' | tr -d '\r' || true
+}
+
 # 7. Читаем git status построчно
 while IFS= read -r status_line || [ -n "$status_line" ]; do
     [ -z "$status_line" ] && continue
@@ -136,6 +178,12 @@ while IFS= read -r status_line || [ -n "$status_line" ]; do
     # Измененные файлы (M, A, R, C)
     if [[ "$file_status" =~ ^[M\ A\ R\ C] ]]; then
         echo "[INFO] Анализ файла: $file_path"
+
+        if [[ ! -f "$PROJECT_ROOT/$file_path" ]]; then
+            echo "       [ERROR] Отслеживаемый файл неожиданно удален"
+            HAS_UNKNOWN_CHANGES=true
+            continue
+        fi
         
         # Проверяем glob-правила (игнор файла целиком)
         if matches_glob "$file_path" "${GLOB_RULES[@]+"${GLOB_RULES[@]}"}"; then
@@ -145,7 +193,7 @@ while IFS= read -r status_line || [ -n "$status_line" ]; do
         
         if [[ "$file_path" == *.properties ]]; then
             # Извлекаем ТОЛЬКО добавленные строки (^+), чтобы не проверять удаленные (-)
-            changed_lines=$(git diff HEAD -- "$file_path" | grep '^+[^+]' | sed 's/^+//' | tr -d '\r')
+            changed_lines=$(diff_added_lines "$file_path")
             
             while IFS= read -r line || [ -n "$line" ]; do
                 [ -z "$line" ] && continue
@@ -163,7 +211,7 @@ while IFS= read -r status_line || [ -n "$status_line" ]; do
                         continue
                     fi
                     
-                    echo "       [ERROR] Неизвестное изменение ключа: $key"
+                    echo "       [ERROR] Неизвестное изменение ключа (значение скрыто): $key"
                     HAS_UNKNOWN_CHANGES=true
                 else
                     if is_line_allowed_by_regex "$file_path" "$line"; then
@@ -171,23 +219,23 @@ while IFS= read -r status_line || [ -n "$status_line" ]; do
                         continue
                     fi
                     
-                    echo "       [ERROR] Неизвестное изменение строки: $line"
+                    echo "       [ERROR] Неизвестное изменение строки (содержимое скрыто)"
                     HAS_UNKNOWN_CHANGES=true
                 fi
             done <<< "$changed_lines"
             
         elif [[ "$file_path" == *.yml ]] || [[ "$file_path" == *.yaml ]] || [[ "$file_path" == *.json ]]; then
-            changed_lines=$(git diff HEAD -- "$file_path" | grep '^+[^+]' | sed 's/^+//' | tr -d '\r')
+            changed_lines=$(diff_added_lines "$file_path")
             
             while IFS= read -r line || [ -n "$line" ]; do
                 [ -z "$line" ] && continue
                 
                 if is_line_allowed_by_regex "$file_path" "$line"; then
-                    echo "       [INFO] Разрешенное изменение (regex): $line"
+                    echo "       [INFO] Разрешенное изменение (regex; содержимое скрыто)"
                     continue
                 fi
                 
-                echo "       [ERROR] Неизвестное изменение в конфиге: $line"
+                echo "       [ERROR] Неизвестное изменение в конфиге (содержимое скрыто)"
                 HAS_UNKNOWN_CHANGES=true
             done <<< "$changed_lines"
             

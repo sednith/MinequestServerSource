@@ -47,6 +47,9 @@ if [[ "$TARGET_ENV" == dev ]]; then
     bash "$SCRIPT_DIR/apply-overrides.sh"
 fi
 
+log "[INFO] Подстановка локальных секретов перед запуском"
+python3 "$SCRIPT_DIR/render-secrets/render-secrets.py" || exit 1
+
 screen_session_exists() {
     local session_name="$1"
     screen -list 2>/dev/null | grep -Eq "^[[:space:]]*[0-9]+\\.${session_name}[[:space:]]+\\("

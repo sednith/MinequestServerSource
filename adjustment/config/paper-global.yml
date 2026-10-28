@@ -113,7 +113,7 @@ proxies:
   velocity:
     enabled: true
     online-mode: true
-    secret: S3IA1Y0LjTw0l6Iz
+    secret: "${VELOCITY_FORWARDING_SECRET}"
 scoreboards:
   save-empty-scoreboard-teams: true
   track-plugin-scoreboards: false

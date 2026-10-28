@@ -5,6 +5,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 cd "$PROJECT_ROOT"
 
+CHECKER_BASELINE_DIR=""
+CHECKER_EXIT_CODE=0
+cleanup_checker_baseline() {
+    if [[ -n "$CHECKER_BASELINE_DIR" && -d "$CHECKER_BASELINE_DIR" ]]; then
+        rm -rf -- "$CHECKER_BASELINE_DIR"
+    fi
+}
+trap cleanup_checker_baseline EXIT
+
 if (( $# != 0 )); then
     echo "Использование: bash scripts/deploy-dev.sh" >&2
     exit 2
@@ -96,6 +105,13 @@ echo "[INFO] Фиксация Состояния B..."
 git add .
 git commit -m "ci: temporary state B for checker" || true
 
+echo "[INFO] Подстановка локальных секретов после фиксации B..."
+python3 "$SCRIPT_DIR/render-secrets/render-secrets.py"
+CHECKER_BASELINE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/minequest-checker.XXXXXX")"
+chmod 700 "$CHECKER_BASELINE_DIR"
+export CHECKER_BASELINE_DIR
+python3 "$SCRIPT_DIR/render-secrets/snapshot-configs.py" "$CHECKER_BASELINE_DIR"
+
 echo "[OK] Stage 1 завершена"
 
 echo ""
@@ -116,9 +132,28 @@ echo "[STAGE 3/4] Check Changes"
 echo "-----------------------------------------"
 
 echo "[INFO] Запуск Checker'а..."
-bash "$SCRIPT_DIR/checker.sh"
+if bash "$SCRIPT_DIR/checker.sh"; then
+    :
+else
+    CHECKER_EXIT_CODE=$?
+    REPORT_DIR="$PROJECT_ROOT/checker-report"
+    echo "[ERROR] Checker завершился с ошибкой. Отчёты для диагностики:"
+    for report_file in "$REPORT_DIR/git-status.txt" "$REPORT_DIR/git-diff.txt"; do
+        if [[ -f "$report_file" ]]; then
+            echo "----- $(basename -- "$report_file") -----"
+            cat -- "$report_file"
+            echo "----- конец $(basename -- "$report_file") -----"
+        else
+            echo "[WARN] Файл отчёта не создан: $(basename -- "$report_file")"
+        fi
+    done
+fi
 
-echo "[OK] Stage 3 завершена"
+if (( CHECKER_EXIT_CODE == 0 )); then
+    echo "[OK] Stage 3 завершена"
+else
+    echo "[ERROR] Stage 3 завершена с ошибкой; перехожу к обязательной очистке B"
+fi
 
 echo ""
 echo "[STAGE 4/4] Cleanup"
@@ -139,5 +174,10 @@ fi
 echo "[OK] Stage 4 завершена"
 echo ""
 echo "========================================="
+if (( CHECKER_EXIT_CODE != 0 )); then
+    echo "[ERROR] DEV DEPLOY FAILED: Checker обнаружил неизвестные изменения"
+    echo "========================================="
+    exit "$CHECKER_EXIT_CODE"
+fi
 echo "[OK] DEV DEPLOY COMPLETED SUCCESSFULLY"
 echo "========================================="

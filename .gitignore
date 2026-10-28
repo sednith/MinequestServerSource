@@ -1,7 +1,7 @@
 .idea/
 **/.paper/console_history
 **/.console_history
-/velocity/forwarding.secret
+/secrets
 /velocity/lang/
 logs/
 **/.server.pid
@@ -40,3 +40,5 @@ checker-report/
 !**/world/dimensions/minecraft/the_nether/
 **/world/dimensions/minecraft/the_nether/*
 !**/world/dimensions/minecraft/the_nether/paper-world.yml
+
+__pycache__/
