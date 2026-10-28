@@ -1,20 +1,47 @@
-name: Release Management
+name: Release and Deploy PROD
+run-name: Release ${{ inputs.release_mode }} to PROD
 
 on:
   workflow_dispatch:
     inputs:
-      release_type:
-        description: 'Выберите тип обновления версии:'
+      release_mode:
+        description: Release a normal DEV build or hotfix a selected branch
         required: true
-        default: 'patch'
+        type: choice
+        options:
+          - release
+          - hotfix
+      release_type:
+        description: Version increment for a normal release (hotfixes always use patch)
+        required: true
+        default: patch
         type: choice
         options:
           - patch
           - minor
           - major
+      hotfix_branch:
+        description: Source branch for hotfix (ignored for a normal release)
+        required: false
+        type: string
+      restart_prod:
+        description: Restart PROD servers after deploying a hotfix
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: minecraft-server-deploy
+  cancel-in-progress: false
+
+env:
+  PROD_DIR: /home/server/prod
+  DEV_DIR: /home/server/dev
+  PROD_LAST_GOOD_SHA_FILE: /home/server/prod/.last-good-deploy-sha
 
 jobs:
-  merge-and-tag:
+  release-and-deploy:
+    name: Create version and deploy PROD
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -23,58 +50,168 @@ jobs:
           token: ${{ secrets.RELEASE_TOKEN }}
           fetch-depth: 0
 
-      - name: Configure Git
+      - name: Merge changes and create version tag
+        id: release
+        env:
+          RELEASE_MODE: ${{ inputs.release_mode }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          HOTFIX_BRANCH: ${{ inputs.hotfix_branch }}
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
 
-      - name: Sync and Merge
-        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin --tags
           git fetch origin main dev
-          git checkout main
-          # Служебная метка для исключения коммита из release notes; GitHub Actions ее не интерпретирует.
-          git merge origin/dev --no-ff -m "release: merge branch 'dev' into 'main' [internal]"
+          git checkout -B main origin/main
 
-      - name: Calculate and Push New Tag
-        run: |
-          # 1. Получаем последний тег. Если тегов нет, берем v1.0.0
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
-          echo "[INFO] Текущая версия в репозитории: $LATEST_TAG"
-          
-          # 2. Убираем букву 'v' и разбиваем на компоненты
-          VERSION_CLEAN=${LATEST_TAG#v}
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_CLEAN"
-          
-          # 3. Читаем выбор пользователя из интерфейса GitHub
-          CHOICE="${{ github.event.inputs.release_type }}"
-          echo "[INFO] Выбран тип релиза: $CHOICE"
-          
-          # 4. Логика изменения цифр в зависимости от выбора (SemVer)
-          if [ "$CHOICE" = "major" ]; then
-              MAJOR=$((MAJOR + 1))
-              MINOR=0
-              PATCH=0
-          elif [ "$CHOICE" = "minor" ]; then
-              MINOR=$((MINOR + 1))
-              PATCH=0
-          else
-              PATCH=$((PATCH + 1))
+          case "$RELEASE_MODE" in
+            release)
+              echo "[INFO] Слияние dev в main для обычного релиза"
+              git merge origin/dev --no-ff -m "release: merge branch 'dev' into 'main' [internal]"
+              VERSION_TYPE="$RELEASE_TYPE"
+              ;;
+            hotfix)
+              if [[ -z "$HOTFIX_BRANCH" ]] || ! git check-ref-format --branch "$HOTFIX_BRANCH" >/dev/null; then
+                echo "[ERROR] Укажите корректное имя ветки хотфикса" >&2
+                exit 2
+              fi
+              if [[ "$HOTFIX_BRANCH" == main || "$HOTFIX_BRANCH" == dev ]]; then
+                echo "[ERROR] Для хотфикса выберите отдельную исходную ветку, не main/dev" >&2
+                exit 2
+              fi
+              git fetch origin "refs/heads/$HOTFIX_BRANCH:refs/remotes/origin/$HOTFIX_BRANCH"
+              echo "[INFO] Слияние origin/$HOTFIX_BRANCH в main для хотфикса"
+              git merge "origin/$HOTFIX_BRANCH" --no-ff -m "hotfix: merge branch '$HOTFIX_BRANCH' into 'main' [internal]"
+              VERSION_TYPE=patch
+              ;;
+            *)
+              echo "[ERROR] Неизвестный режим релиза: $RELEASE_MODE" >&2
+              exit 2
+              ;;
+          esac
+
+          LATEST_TAG="$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          if [[ -z "$LATEST_TAG" ]]; then
+            LATEST_TAG=v1.0.0
+            echo "[WARN] Стабильных тегов vX.Y.Z не найдено; используется базовая версия $LATEST_TAG"
           fi
-          
+
+          VERSION="${LATEST_TAG#v}"
+          IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
+          case "$VERSION_TYPE" in
+            major) ((MAJOR += 1)); MINOR=0; PATCH=0 ;;
+            minor) ((MINOR += 1)); PATCH=0 ;;
+            patch) ((PATCH += 1)) ;;
+            *) echo "[ERROR] Неизвестный тип версии: $VERSION_TYPE" >&2; exit 2 ;;
+          esac
+
           NEW_TAG="v$MAJOR.$MINOR.$PATCH"
-          echo "[INFO] Сгенерирован новый тег: $NEW_TAG"
-          
-          # 5. ГЕНЕРАЦИЯ СПИСКА ИЗМЕНЕНИЙ (CHANGELOG) 
-          # Берем коммиты между прошлым тегом и текущим состоянием, форматируем списком.
-          # Исключаем из списка служебные коммиты с меткой [internal].
-          CHANGELOG=$(git log ${LATEST_TAG}..HEAD --oneline --pretty=format:"- %s" | grep -v "\[internal\]" || echo "- Мелкие правки и улучшения")
-          
-          echo -e "[INFO] Сформирован список изменений:\n$CHANGELOG"
-          
-          # 6. Создаем аннотированный тег, где первый -m — заголовок, а второй — наш Changelog
-          git tag -a "$NEW_TAG" -m "Release $NEW_TAG ($CHOICE)" -m "$CHANGELOG"
-          
-          # 7. Пушим изменения в ветку main и отправляем созданный тег на GitHub
-          git push origin main
-          git push origin "$NEW_TAG"
-          echo "[OK] Релиз $NEW_TAG успешно выпущен!"
+          if git rev-parse -q --verify "refs/tags/$NEW_TAG" >/dev/null; then
+            echo "[ERROR] Тег $NEW_TAG уже существует; ветки не отправлены" >&2
+            exit 1
+          fi
+
+          CHANGELOG="$(git log "$LATEST_TAG"..HEAD --oneline --pretty=format:'- %s' | grep -v '\[internal\]' || true)"
+          if [[ -z "$CHANGELOG" ]]; then
+            CHANGELOG='- Мелкие правки и улучшения'
+          fi
+          git tag -a "$NEW_TAG" -m "Release $NEW_TAG ($VERSION_TYPE)" -m "$CHANGELOG"
+
+          echo "[INFO] Публикация main и тега $NEW_TAG"
+          git push --atomic origin main "refs/tags/$NEW_TAG"
+          echo "release_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "[OK] Создан релиз $NEW_TAG"
+
+      - name: Deploy PROD, optionally restart, and sync DEV
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          RESTART_PROD: ${{ inputs.release_mode == 'hotfix' && inputs.restart_prod }}
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          envs: RELEASE_TAG,RESTART_PROD,PROD_DIR,DEV_DIR,PROD_LAST_GOOD_SHA_FILE
+          script: |
+            set -euo pipefail
+
+            if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "[ERROR] Некорректный тег релиза: $RELEASE_TAG" >&2
+              exit 2
+            fi
+            for directory in "$PROD_DIR" "$DEV_DIR"; do
+              if [ ! -d "$directory" ]; then
+                echo "[ERROR] Каталог не существует: $directory" >&2
+                exit 1
+              fi
+            done
+
+            echo "[ЭТАП 1/3] Обновление PROD до актуального origin/main (релиз $RELEASE_TAG)"
+            cd "$PROD_DIR"
+            git fetch origin --tags +refs/heads/main:refs/remotes/origin/main
+            TARGET_SHA="$(git rev-parse refs/remotes/origin/main)"
+            LAST_GOOD_SHA=""
+
+            if [ "$RESTART_PROD" = "true" ]; then
+              if [ ! -s "$PROD_LAST_GOOD_SHA_FILE" ]; then
+                echo "[ERROR] Не найден SHA последней успешной версии: $PROD_LAST_GOOD_SHA_FILE" >&2
+                echo "[ERROR] До первого рестарта укажите в этом файле подтверждённый SHA работающей версии PROD." >&2
+                exit 1
+              fi
+              LAST_GOOD_SHA="$(tr -d '[:space:]' < "$PROD_LAST_GOOD_SHA_FILE")"
+              if [[ ! "$LAST_GOOD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+                  || ! git cat-file -e "${LAST_GOOD_SHA}^{commit}" 2>/dev/null; then
+                echo "[ERROR] В $PROD_LAST_GOOD_SHA_FILE указан недействительный или недоступный SHA" >&2
+                exit 1
+              fi
+              echo "[INFO] Целевая версия: $TARGET_SHA; последняя успешная версия: $LAST_GOOD_SHA"
+            fi
+
+            git checkout -f -B main "$TARGET_SHA"
+            git reset --hard "$TARGET_SHA"
+
+            if [ "$RESTART_PROD" = "true" ]; then
+              echo "[ЭТАП 2/3] Рестарт PROD и проверка готовности"
+              if bash ./scripts/restart.sh prod; then
+                printf '%s\n' "$TARGET_SHA" > "${PROD_LAST_GOOD_SHA_FILE}.tmp"
+                mv "${PROD_LAST_GOOD_SHA_FILE}.tmp" "$PROD_LAST_GOOD_SHA_FILE"
+                echo "[OK] Новая версия подтверждена и записана как последняя успешная"
+              else
+                RESTART_EXIT_CODE=$?
+                echo "[ERROR] Новая версия не прошла проверку; возвращаю PROD к $LAST_GOOD_SHA" >&2
+                if ! git reset --hard "$LAST_GOOD_SHA"; then
+                  echo "[CRITICAL] Не удалось вернуть файлы PROD к последней успешной версии" >&2
+                  exit 1
+                fi
+                if bash ./scripts/restart.sh prod; then
+                  echo "[OK] PROD восстановлен и запущен на последней успешной версии $LAST_GOOD_SHA"
+                else
+                  echo "[CRITICAL] Откат файлов выполнен, но серверы не прошли проверку запуска" >&2
+                fi
+                echo "[ERROR] Релиз $RELEASE_TAG неуспешен; синхронизация DEV не выполняется" >&2
+                exit "$RESTART_EXIT_CODE"
+              fi
+            else
+              echo "[ЭТАП 2/3] Рестарт PROD не запрошен; работающие процессы не перезапускаются"
+            fi
+
+            echo "[ЭТАП 3/3] Синхронизация main в dev"
+            cd "$DEV_DIR"
+            git fetch origin
+            git checkout -f -B dev origin/dev
+            if git merge-base --is-ancestor origin/main HEAD; then
+              echo "[INFO] dev уже содержит все коммиты main"
+            else
+              if ! git merge --no-ff --no-edit -m "chore: sync main into dev [internal]" origin/main; then
+                echo "[ERROR] Конфликт при синхронизации main в dev" >&2
+                git merge --abort
+                echo "[WARN] PROD обновлен, dev требует ручного разрешения конфликта" >&2
+                exit 1
+              fi
+              git push origin dev
+              echo "[OK] dev синхронизирован; существующий push-trigger запустит dev deploy"
+            fi
+
+            echo "[OK] Релиз $RELEASE_TAG развернут на PROD"

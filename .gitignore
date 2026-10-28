@@ -22,6 +22,8 @@ cache/
 
 overrides/
 checker-report/
+/.last-good-deploy-sha
+/.last-good-deploy-sha.tmp
 # WORLD
 **/world/*
 !**/world/dimensions/
