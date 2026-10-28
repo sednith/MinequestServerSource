@@ -76,8 +76,8 @@ jobs:
             else
               echo "[INFO] Выполнение слияния main -> dev (перенос hotfix-ов)..."
             
-              # --no-ff гарантирует создание коммита слияния, [skip ci] предотвращает запуск dev-пайплайна
-              if ! git merge --no-ff --no-edit -m "chore: sync main into dev [skip ci]" origin/main; then
+              # Служебная метка [internal] не подавляет GitHub Actions: push в dev запускает отдельный dev workflow.
+              if ! git merge --no-ff --no-edit -m "chore: sync main into dev [internal]" origin/main; then
                 echo "[ERROR] Обнаружен конфликт при слиянии main в dev!"
                 echo "[ERROR] Откат слияния (git merge --abort)..."
                 git merge --abort
@@ -91,14 +91,7 @@ jobs:
             fi
 
             echo ""
-            echo "[ЭТАП 3/3] DEV: deploy servers in configured order"
-            echo "-----------------------------------------"
-            
-            cd "$DEV_DIR"
-            bash ./scripts/deploy-dev.sh
-
-            echo ""
             echo "========================================="
             echo "[OK] ДЕПЛОЙ НА PROD УСПЕШНО ЗАВЕРШЕН!"
-            echo "[OK] DEV СИНХРОНИЗИРОВАН И ПЕРЕЗАПУЩЕН!"
+            echo "[OK] DEV СИНХРОНИЗИРОВАН; отдельный workflow запустится при push в dev."
             echo "========================================="

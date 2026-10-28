@@ -32,8 +32,8 @@ jobs:
         run: |
           git fetch origin main dev
           git checkout main
-          # Грамотное сообщение коммита слияния с пропуском повторных проверок CI
-          git merge origin/dev --no-ff -m "release: merge branch 'dev' into 'main' [skip ci]"
+          # Служебная метка для исключения коммита из release notes; GitHub Actions ее не интерпретирует.
+          git merge origin/dev --no-ff -m "release: merge branch 'dev' into 'main' [internal]"
 
       - name: Calculate and Push New Tag
         run: |
@@ -66,8 +66,8 @@ jobs:
           
           # 5. ГЕНЕРАЦИЯ СПИСКА ИЗМЕНЕНИЙ (CHANGELOG) 
           # Берем коммиты между прошлым тегом и текущим состоянием, форматируем списком.
-          # Исключаем из списка сам технический коммит релиза ([skip ci]), чтобы не мусорить.
-          CHANGELOG=$(git log ${LATEST_TAG}..HEAD --oneline --pretty=format:"- %s" | grep -v "\[skip ci\]" || echo "- Мелкие правки и улучшения")
+          # Исключаем из списка служебные коммиты с меткой [internal].
+          CHANGELOG=$(git log ${LATEST_TAG}..HEAD --oneline --pretty=format:"- %s" | grep -v "\[internal\]" || echo "- Мелкие правки и улучшения")
           
           echo -e "[INFO] Сформирован список изменений:\n$CHANGELOG"
           
