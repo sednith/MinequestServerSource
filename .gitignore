@@ -43,3 +43,4 @@ checker-report/
 
 __pycache__/
 .venv/
+/test
