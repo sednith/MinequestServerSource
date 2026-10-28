@@ -13,45 +13,27 @@ echo "========================================="
 echo "  Checker: Проверка изменений после запуска серверов"
 echo "========================================="
 
-# 1. Compare with the post-render/pre-restart snapshot where available. This
-# excludes our own secret rendering and leaves only changes made after startup.
-: > "$REPORT_DIR/git-status.txt"
-while IFS= read -r status_line || [[ -n "$status_line" ]]; do
-    [[ -z "$status_line" ]] && continue
-    file_path="${status_line:3}"
-    baseline_file="${CHECKER_BASELINE_DIR:-}/$file_path"
-    if [[ -n "${CHECKER_BASELINE_DIR:-}" && -f "$baseline_file" && -f "$PROJECT_ROOT/$file_path" ]]; then
-        cmp -s -- "$baseline_file" "$PROJECT_ROOT/$file_path" && continue
-    fi
-    printf '%s\n' "$status_line" >> "$REPORT_DIR/git-status.txt"
-done < <(git status --porcelain)
-
-# Keep a full diff for local diagnosis, but redact sensitive values. Files in
-# the manifest are diffed against the rendered baseline instead of commit B.
-{
-    while IFS= read -r status_line || [[ -n "$status_line" ]]; do
-        [[ -z "$status_line" ]] && continue
-        file_path="${status_line:3}"
-        baseline_file="${CHECKER_BASELINE_DIR:-}/$file_path"
-        if [[ -n "${CHECKER_BASELINE_DIR:-}" && -f "$baseline_file" ]]; then
-            if [[ -f "$PROJECT_ROOT/$file_path" ]]; then
-                diff -u --label "a/$file_path" --label "b/$file_path" -- "$baseline_file" "$PROJECT_ROOT/$file_path" || true
-            else
-                diff -u --label "a/$file_path" --label "b/$file_path" -- "$baseline_file" /dev/null || true
-            fi
-        elif [[ "${status_line:0:2}" != "??" ]]; then
-            git diff --no-ext-diff --no-color HEAD -- "$file_path"
-        fi
-    done < "$REPORT_DIR/git-status.txt"
-} | python3 "$SCRIPT_DIR/redact-diff.py" > "$REPORT_DIR/git-diff.txt"
-
-# 2. Если изменений нет — всё отлично
-if [ ! -s "$REPORT_DIR/git-status.txt" ]; then
-    echo "[INFO] Изменений после запуска сервера не обнаружено."
-    exit 0
-fi
-
-echo "[WARN] Обнаружены изменения в рабочей директории. Начинаем анализ..."
+# Paper may rewrite server.properties with different whitespace and a new
+# generated timestamp. Compare semantic key/value pairs rather than formatting.
+normalize_properties_file() {
+    awk '
+        /^[[:space:]]*[#!]/ || /^[[:space:]]*$/ { next }
+        {
+            line = $0
+            sub(/\r$/, "", line)
+            separator = index(line, "=")
+            if (!separator) next
+            key = substr(line, 1, separator - 1)
+            value = substr(line, separator + 1)
+            sub(/^[[:space:]]+/, "", key)
+            sub(/[[:space:]]+$/, "", key)
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            gsub(/\\:/, ":", value)
+            print key "=" value
+        }
+    ' "$1" | sort
+}
 
 # 3. Парсинг .checkerignore
 declare -a GLOB_RULES=()
@@ -157,6 +139,131 @@ diff_added_lines() {
     fi | grep '^+[^+]' | sed 's/^+//' | tr -d '\r' || true
 }
 
+diff_added_property_lines() {
+    local file="$1"
+    local baseline_file="${CHECKER_BASELINE_DIR:-}/$file"
+    if [[ -n "${CHECKER_BASELINE_DIR:-}" && -f "$baseline_file" ]]; then
+        diff -u -- <(normalize_properties_file "$baseline_file") \
+            <(normalize_properties_file "$PROJECT_ROOT/$file") || true
+    else
+        diff -u -- <(git show "HEAD:$file" | normalize_properties_file -) \
+            <(normalize_properties_file "$PROJECT_ROOT/$file") || true
+    fi | grep '^+[^+]' | sed 's/^+//' | tr -d '\r' || true
+}
+
+# Build reports from only changes the Checker does not ignore. Secret rendering
+# and formatting-only .properties rewrites are omitted from both status and diff.
+is_reportable_change() {
+    local status_line="$1"
+    local file_status="${status_line:0:2}"
+    local file_path="${status_line:3}"
+    local baseline_file="${CHECKER_BASELINE_DIR:-}/$file_path"
+    local changed_lines line key
+
+    if [[ "$file_status" == "??" ]]; then
+        matches_glob "$file_path" "${GLOB_RULES[@]+"${GLOB_RULES[@]}"}" && return 1
+        return 0
+    fi
+
+    if [[ -n "${CHECKER_BASELINE_DIR:-}" && -f "$baseline_file" && -f "$PROJECT_ROOT/$file_path" ]] \
+        && cmp -s -- "$baseline_file" "$PROJECT_ROOT/$file_path"; then
+        return 1
+    fi
+    matches_glob "$file_path" "${GLOB_RULES[@]+"${GLOB_RULES[@]}"}" && return 1
+
+    if [[ "$file_path" == *.properties ]]; then
+        changed_lines=$(diff_added_property_lines "$file_path")
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ -z "$line" ]] && continue
+            if [[ "$line" == *=* ]]; then
+                key=$(echo "$line" | cut -d'=' -f1 | tr -d ' ')
+                is_key_allowed "$file_path" "$key" && continue
+            fi
+            is_line_allowed_by_regex "$file_path" "$line" && continue
+            return 0
+        done <<< "$changed_lines"
+        return 1
+    fi
+
+    if [[ "$file_path" == *.yml || "$file_path" == *.yaml || "$file_path" == *.json ]]; then
+        changed_lines=$(diff_added_lines "$file_path")
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ -z "$line" ]] && continue
+            is_line_allowed_by_regex "$file_path" "$line" && continue
+            return 0
+        done <<< "$changed_lines"
+        return 1
+    fi
+
+    return 0
+}
+
+: > "$REPORT_DIR/git-status.txt"
+while IFS= read -r status_line || [[ -n "$status_line" ]]; do
+    [[ -z "$status_line" ]] && continue
+    if is_reportable_change "$status_line"; then
+        printf '%s\n' "$status_line" >> "$REPORT_DIR/git-status.txt"
+    fi
+done < <(git status --porcelain)
+
+{
+    while IFS= read -r status_line || [[ -n "$status_line" ]]; do
+        [[ -z "$status_line" ]] && continue
+        file_status="${status_line:0:2}"
+        file_path="${status_line:3}"
+        [[ "$file_status" == "??" ]] && continue
+        matches_glob "$file_path" "${GLOB_RULES[@]+"${GLOB_RULES[@]}"}" && continue
+
+        if [[ "$file_path" == *.properties ]]; then
+            changed_lines=$(diff_added_property_lines "$file_path")
+            report_lines=()
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                [[ -z "$line" ]] && continue
+                if [[ "$line" == *=* ]]; then
+                    key=$(echo "$line" | cut -d'=' -f1 | tr -d ' ')
+                    is_key_allowed "$file_path" "$key" && continue
+                fi
+                is_line_allowed_by_regex "$file_path" "$line" && continue
+                report_lines+=("$line")
+            done <<< "$changed_lines"
+            if (( ${#report_lines[@]} > 0 )); then
+                printf '%s\n' "--- a/$file_path" "+++ b/$file_path"
+                printf '+%s\n' "${report_lines[@]}"
+            fi
+        elif [[ "$file_path" == *.yml || "$file_path" == *.yaml || "$file_path" == *.json ]]; then
+            changed_lines=$(diff_added_lines "$file_path")
+            report_lines=()
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                [[ -z "$line" ]] && continue
+                is_line_allowed_by_regex "$file_path" "$line" && continue
+                report_lines+=("$line")
+            done <<< "$changed_lines"
+            if (( ${#report_lines[@]} > 0 )); then
+                printf '%s\n' "--- a/$file_path" "+++ b/$file_path"
+                printf '+%s\n' "${report_lines[@]}"
+            fi
+        else
+            baseline_file="${CHECKER_BASELINE_DIR:-}/$file_path"
+            if [[ -n "${CHECKER_BASELINE_DIR:-}" && -f "$baseline_file" ]]; then
+                if [[ -f "$PROJECT_ROOT/$file_path" ]]; then
+                    diff -u --label "a/$file_path" --label "b/$file_path" -- "$baseline_file" "$PROJECT_ROOT/$file_path" || true
+                else
+                    diff -u --label "a/$file_path" --label "b/$file_path" -- "$baseline_file" /dev/null || true
+                fi
+            else
+                git diff --no-ext-diff --no-color HEAD -- "$file_path"
+            fi
+        fi
+    done < "$REPORT_DIR/git-status.txt"
+} | python3 "$SCRIPT_DIR/redact-diff.py" > "$REPORT_DIR/git-diff.txt"
+
+if [ ! -s "$REPORT_DIR/git-status.txt" ]; then
+    echo "[INFO] Неразрешённых изменений после запуска не обнаружено (baseline и .checkerignore учтены)."
+    exit 0
+fi
+
+echo "[WARN] Обнаружены неразрешённые изменения. Начинаю анализ..."
+
 # 7. Читаем git status построчно
 while IFS= read -r status_line || [ -n "$status_line" ]; do
     [ -z "$status_line" ] && continue
@@ -193,7 +300,7 @@ while IFS= read -r status_line || [ -n "$status_line" ]; do
         
         if [[ "$file_path" == *.properties ]]; then
             # Извлекаем ТОЛЬКО добавленные строки (^+), чтобы не проверять удаленные (-)
-            changed_lines=$(diff_added_lines "$file_path")
+            changed_lines=$(diff_added_property_lines "$file_path")
             
             while IFS= read -r line || [ -n "$line" ]; do
                 [ -z "$line" ] && continue
@@ -202,12 +309,10 @@ while IFS= read -r status_line || [ -n "$status_line" ]; do
                     key=$(echo "$line" | cut -d'=' -f1 | tr -d ' ')
                     
                     if is_key_allowed "$file_path" "$key"; then
-                        echo "       [INFO] Разрешенное изменение ключа: $key"
                         continue
                     fi
                     
                     if is_line_allowed_by_regex "$file_path" "$line"; then
-                        echo "       [INFO] Разрешенное изменение (regex): $key"
                         continue
                     fi
                     
@@ -215,7 +320,6 @@ while IFS= read -r status_line || [ -n "$status_line" ]; do
                     HAS_UNKNOWN_CHANGES=true
                 else
                     if is_line_allowed_by_regex "$file_path" "$line"; then
-                        echo "       [INFO] Разрешенное изменение (regex): $line"
                         continue
                     fi
                     
@@ -231,7 +335,6 @@ while IFS= read -r status_line || [ -n "$status_line" ]; do
                 [ -z "$line" ] && continue
                 
                 if is_line_allowed_by_regex "$file_path" "$line"; then
-                    echo "       [INFO] Разрешенное изменение (regex; содержимое скрыто)"
                     continue
                 fi
                 

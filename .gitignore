@@ -42,3 +42,4 @@ checker-report/
 !**/world/dimensions/minecraft/the_nether/paper-world.yml
 
 __pycache__/
+.venv/

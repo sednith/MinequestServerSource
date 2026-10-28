@@ -7,12 +7,39 @@ cd "$PROJECT_ROOT"
 
 CHECKER_BASELINE_DIR=""
 CHECKER_EXIT_CODE=0
-cleanup_checker_baseline() {
+TEMP_COMMIT_CREATED=false
+TEMP_COMMIT_HASH=""
+TEMP_COMMIT_PARENT=""
+cleanup_temporary_commit() {
+    [[ "$TEMP_COMMIT_CREATED" == true ]] || return 0
+    local current_hash current_root current_branch
+    current_hash=$(git rev-parse HEAD 2>/dev/null || true)
+    current_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    current_branch=$(git branch --show-current 2>/dev/null || true)
+    if [[ "$current_root" == "/home/server/dev" && "$current_branch" == "dev" && "$current_hash" == "$TEMP_COMMIT_HASH" ]]; then
+        echo "[INFO] Удаление только временного коммита B..."
+        if git reset --mixed "$TEMP_COMMIT_PARENT"; then
+            TEMP_COMMIT_CREATED=false
+        else
+            echo "[ERROR] Не удалось удалить временный commit B" >&2
+            return 1
+        fi
+    else
+        echo "[ERROR] Не удаляю commit: HEAD/ветка/корень изменились после создания B" >&2
+        return 1
+    fi
+}
+cleanup_on_exit() {
+    local exit_code=$?
+    trap - EXIT
+
+    cleanup_temporary_commit || exit_code=1
     if [[ -n "$CHECKER_BASELINE_DIR" && -d "$CHECKER_BASELINE_DIR" ]]; then
         rm -rf -- "$CHECKER_BASELINE_DIR"
     fi
+    exit "$exit_code"
 }
-trap cleanup_checker_baseline EXIT
+trap cleanup_on_exit EXIT
 
 if (( $# != 0 )); then
     echo "Использование: bash scripts/deploy-dev.sh" >&2
@@ -96,14 +123,33 @@ echo "[INFO] Проверка заданного порядка рестарта
 validate_server_order
 echo "[INFO] Порядок рестарта: ${SERVER_START_ORDER[*]}"
 
-chmod +x "$SCRIPT_DIR/apply-overrides.sh" "$SCRIPT_DIR/restart.sh" "$SCRIPT_DIR/checker.sh"
-
 echo "[INFO] Применение overrides..."
 bash "$SCRIPT_DIR/apply-overrides.sh"
 
-echo "[INFO] Фиксация Состояния B..."
-git add .
-git commit -m "ci: temporary state B for checker" || true
+echo "[INFO] Фиксация Состояния B без secret-rendered файлов..."
+if ! python3 -c 'import sys; sys.path.insert(0, "scripts/render-secrets"); from manifest import load_manifest; load_manifest()' >/dev/null 2>&1; then
+    echo "[ERROR] Не удалось проверить манифест секретных файлов; commit B не создаётся" >&2
+    exit 1
+fi
+mapfile -d '' -t SECRET_PATHS < <(python3 -c 'import sys; sys.path.insert(0, "scripts/render-secrets"); from manifest import load_manifest; [sys.stdout.buffer.write(path.encode() + b"\0") for path, _ in load_manifest()]')
+if (( ${#SECRET_PATHS[@]} == 0 )); then
+    echo "[ERROR] Манифест не содержит путей; commit B не создаётся" >&2
+    exit 1
+fi
+EXCLUDED_PATHS=()
+for secret_path in "${SECRET_PATHS[@]}"; do
+    EXCLUDED_PATHS+=(":(exclude)$secret_path")
+done
+git add -A -- . "${EXCLUDED_PATHS[@]}"
+if ! git diff --cached --quiet; then
+    TEMP_COMMIT_PARENT=$(git rev-parse HEAD)
+    git commit -m "ci: temporary state B for checker"
+    TEMP_COMMIT_HASH=$(git rev-parse HEAD)
+    TEMP_COMMIT_CREATED=true
+    echo "[INFO] Commit B создан; manifest secret-файлы исключены из индекса"
+else
+    echo "[INFO] Изменений для временного commit B нет"
+fi
 
 echo "[INFO] Подстановка локальных секретов после фиксации B..."
 python3 "$SCRIPT_DIR/render-secrets/render-secrets.py"
@@ -160,15 +206,10 @@ echo "[STAGE 4/4] Cleanup"
 echo "-----------------------------------------"
 
 echo "[INFO] Очистка временного коммита..."
-LAST_COMMIT_MSG=$(git log -1 --pretty=%B | tr -d '\n')
-
-if [[ "$LAST_COMMIT_MSG" == *"ci: temporary state B for checker"* ]]; then
-    echo "[INFO] Временный коммит найден. Выполняю откат..."
-    git reset --soft HEAD~1
-    git reset HEAD
-    echo "[INFO] Откат завершён."
+if [[ "$TEMP_COMMIT_CREATED" == true ]]; then
+    cleanup_temporary_commit
 else
-    echo "[INFO] Временный коммит не создавался (не было изменений). Пропускаю откат, состояние чистое."
+    echo "[INFO] Временный коммит не создавался."
 fi
 
 echo "[OK] Stage 4 завершена"
