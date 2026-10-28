@@ -40,8 +40,10 @@ fi
 
 if [[ -f "$LOG_FILE" ]]; then
     LOG_SIZE_BEFORE=$(wc -c < "$LOG_FILE")
+    LOG_INODE_BEFORE=$(stat -c '%i' -- "$LOG_FILE")
 else
     LOG_SIZE_BEFORE=0
+    LOG_INODE_BEFORE=""
 fi
 
 log "[INFO] Перезапуск $SERVER_NAME (PID $OLD_PID)"
@@ -102,9 +104,12 @@ while (( ELAPSED < TIMEOUT )); do
 
     if [[ -f "$LOG_FILE" ]]; then
         LOG_SIZE_NOW=$(wc -c < "$LOG_FILE")
-        if (( LOG_SIZE_NOW < LOG_SIZE_BEFORE )); then
+        LOG_INODE_NOW=$(stat -c '%i' -- "$LOG_FILE")
+        if [[ -n "$LOG_INODE_BEFORE" && "$LOG_INODE_NOW" != "$LOG_INODE_BEFORE" ]] \
+            || (( LOG_SIZE_NOW < LOG_SIZE_BEFORE )); then
             log "[WARN] Обнаружена ротация лога; проверяю файл с начала"
             LOG_SIZE_BEFORE=0
+            LOG_INODE_BEFORE="$LOG_INODE_NOW"
         fi
 
         START_BYTE=$((LOG_SIZE_BEFORE + 1))
