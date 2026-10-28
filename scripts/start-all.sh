@@ -129,6 +129,7 @@ start_and_wait() {
     local ready_pattern
     local pid=""
     local elapsed=0
+    local started_seconds=0
 
     resolve_server "$server" || return $?
     resolve_server_jar || return 1
@@ -178,6 +179,7 @@ start_and_wait() {
         log_size_before="$(wc -c < "$log_file")"
     fi
 
+    started_seconds=$SECONDS
     log "[INFO] Запуск $server в Screen-сессии '${SESSION_PREFIX}${server}'"
     if ! screen -dmS "${SESSION_PREFIX}${server}" bash "$SCRIPT_DIR/startserver.sh" "$server"; then
         log "[ERROR] Не удалось создать Screen-сессию ${SESSION_PREFIX}${server}"
@@ -219,7 +221,7 @@ start_and_wait() {
                     log "[ERROR] Найден маркер готовности $server, но PID не подтверждён"
                     return 1
                 fi
-                log "[OK] $server успешно запущен и готов (PID $pid)"
+                log "[OK] $server успешно запущен и готов за $((SECONDS - started_seconds))с (PID $pid)"
                 return 0
             fi
         fi

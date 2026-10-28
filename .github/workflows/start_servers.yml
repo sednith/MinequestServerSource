@@ -1,4 +1,5 @@
 name: Start Minecraft Servers
+run-name: Start Minecraft Servers — ${{ inputs.environment }}
 
 on:
   workflow_dispatch:
