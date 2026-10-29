@@ -43,6 +43,7 @@ jobs:
   release-and-deploy:
     name: Create version and deploy PROD
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -67,6 +68,11 @@ jobs:
 
           case "$RELEASE_MODE" in
             release)
+              if ! git merge-base --is-ancestor origin/main origin/dev; then
+                echo "[ERROR] В origin/main есть коммиты, отсутствующие в origin/dev (например, после неудачного хотфикса)" >&2
+                echo "[ERROR] Обычный релиз заблокирован: сначала влейте main в dev и запушьте dev" >&2
+                exit 1
+              fi
               echo "[INFO] Слияние dev в main для обычного релиза"
               git merge origin/dev --no-ff -m "release: merge branch 'dev' into 'main' [internal]"
               VERSION_TYPE="$RELEASE_TYPE"
@@ -91,7 +97,10 @@ jobs:
               ;;
           esac
 
-          LATEST_TAG="$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          # Version numbers belong to the main line: tags parked on unmerged
+          # branches must not shift the release line, but they still block the
+          # number they occupy (see the collision check below).
+          LATEST_TAG="$(git tag --list 'v[0-9]*' --merged origin/main | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
           if [[ -z "$LATEST_TAG" ]]; then
             LATEST_TAG=v1.0.0
             echo "[WARN] Стабильных тегов vX.Y.Z не найдено; используется базовая версия $LATEST_TAG"
@@ -107,7 +116,8 @@ jobs:
           esac
 
           NEW_TAG="v$MAJOR.$MINOR.$PATCH"
-          if git rev-parse -q --verify "refs/tags/$NEW_TAG" >/dev/null; then
+          if git rev-parse -q --verify "refs/tags/$NEW_TAG" >/dev/null \
+              || git ls-remote --exit-code --tags origin "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
             echo "[ERROR] Тег $NEW_TAG уже существует; ветки не отправлены" >&2
             exit 1
           fi
@@ -133,6 +143,7 @@ jobs:
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.REMOTE_PORT }}
+          command_timeout: 20m
           envs: RELEASE_TAG,RESTART_PROD,PROD_DIR,DEV_DIR,PROD_LAST_GOOD_SHA_FILE
           script: |
             set -euo pipefail
@@ -180,17 +191,10 @@ jobs:
                 echo "[OK] Новая версия подтверждена и записана как последняя успешная"
               else
                 RESTART_EXIT_CODE=$?
-                echo "[ERROR] Новая версия не прошла проверку; возвращаю PROD к $LAST_GOOD_SHA" >&2
-                if ! git reset --hard "$LAST_GOOD_SHA"; then
-                  echo "[CRITICAL] Не удалось вернуть файлы PROD к последней успешной версии" >&2
-                  exit 1
-                fi
-                if bash ./scripts/restart.sh prod; then
-                  echo "[OK] PROD восстановлен и запущен на последней успешной версии $LAST_GOOD_SHA"
-                else
-                  echo "[CRITICAL] Откат файлов выполнен, но серверы не прошли проверку запуска" >&2
-                fi
-                echo "[ERROR] Релиз $RELEASE_TAG неуспешен; синхронизация DEV не выполняется" >&2
+                echo "[ERROR] Новая версия PROD не прошла проверку" >&2
+                echo "[ERROR] restart.sh откатил PROD на последнюю успешную версию $LAST_GOOD_SHA (подробности отката — в логе выше)" >&2
+                echo "[ERROR] Релиз $RELEASE_TAG считается неуспешным: main и тег $RELEASE_TAG остаются, dev не синхронизирован" >&2
+                echo "[WARN] Чтобы разблокировать обычный релиз, влейте main в dev и запушьте dev" >&2
                 exit "$RESTART_EXIT_CODE"
               fi
             else

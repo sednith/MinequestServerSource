@@ -3,17 +3,18 @@ run-name: Scheduled PROD restart (${{ inputs.stage || github.event.schedule }})
 
 on:
   schedule:
-    # Moscow time (MSK, UTC+3): lobby 04:45, playworld 05:00, Velocity 05:15.
+    # Moscow time (MSK, UTC+3): lobby 04:45. Playworld and Velocity run in the
+    # same workflow run after a pause on the runner (05:00 and 05:15 MSK).
     - cron: '45 1 * * *'
-    - cron: '0 2 * * *'
-    - cron: '15 2 * * *'
   workflow_dispatch:
     inputs:
       stage:
-        description: Server restart stage
+        description: Restart stage to run
         required: true
+        default: all
         type: choice
         options:
+          - all
           - adjustment
           - playworld
           - velocity
@@ -24,23 +25,88 @@ concurrency:
 
 env:
   PROD_SERVER_DIR: /home/server/prod
+  # Пауза между этапами ночного рестарта: 04:45 -> 05:00 -> 05:15 MSK.
+  STAGE_PAUSE_SECONDS: 900
 
 jobs:
-  restart:
-    name: Restart and verify PROD servers
+  adjustment:
+    name: Restart lobby (adjustment)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    if: ${{ github.event_name == 'schedule' || inputs.stage == 'all' || inputs.stage == 'adjustment' }}
     steps:
-      - name: Restart PROD servers on schedule over SSH
+      - name: Restart lobby over SSH
         uses: appleboy/ssh-action@v1.0.0
         env:
-          RESTART_STAGE: ${{ inputs.stage || (github.event.schedule == '45 1 * * *' && 'adjustment') || (github.event.schedule == '0 2 * * *' && 'playworld') || (github.event.schedule == '15 2 * * *' && 'velocity') }}
+          RESTART_STAGE: adjustment
         with:
           host: ${{ secrets.REMOTE_HOST }}
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.REMOTE_PORT }}
-          command_timeout: 45m
+          command_timeout: 20m
+          envs: PROD_SERVER_DIR,RESTART_STAGE
+          script: |
+            set -euo pipefail
+
+            if [ ! -d "$PROD_SERVER_DIR" ]; then
+              echo "[ERROR] PROD directory does not exist: $PROD_SERVER_DIR" >&2
+              exit 1
+            fi
+
+            cd "$PROD_SERVER_DIR"
+            bash ./scripts/scheduled-restart.sh "$RESTART_STAGE"
+
+  playworld:
+    name: Restart playworld
+    needs: adjustment
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !cancelled() && needs.adjustment.result != 'failure' && (github.event_name == 'schedule' || inputs.stage == 'all' || inputs.stage == 'playworld') }}
+    steps:
+      - name: Wait for the next stage slot
+        run: sleep "$STAGE_PAUSE_SECONDS"
+      - name: Restart playworld over SSH
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          RESTART_STAGE: playworld
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          command_timeout: 20m
+          envs: PROD_SERVER_DIR,RESTART_STAGE
+          script: |
+            set -euo pipefail
+
+            if [ ! -d "$PROD_SERVER_DIR" ]; then
+              echo "[ERROR] PROD directory does not exist: $PROD_SERVER_DIR" >&2
+              exit 1
+            fi
+
+            cd "$PROD_SERVER_DIR"
+            bash ./scripts/scheduled-restart.sh "$RESTART_STAGE"
+
+  velocity:
+    name: Restart velocity
+    needs: playworld
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !cancelled() && needs.playworld.result != 'failure' && (github.event_name == 'schedule' || inputs.stage == 'all' || inputs.stage == 'velocity') }}
+    steps:
+      - name: Wait for the next stage slot
+        run: sleep "$STAGE_PAUSE_SECONDS"
+      - name: Restart velocity over SSH
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          RESTART_STAGE: velocity
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          command_timeout: 20m
           envs: PROD_SERVER_DIR,RESTART_STAGE
           script: |
             set -euo pipefail

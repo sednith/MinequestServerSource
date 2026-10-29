@@ -24,6 +24,7 @@ jobs:
   restart:
     name: Restart ${{ inputs.environment }} servers
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Restart servers over SSH
         uses: appleboy/ssh-action@v1.0.0
@@ -34,6 +35,7 @@ jobs:
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.REMOTE_PORT }}
+          command_timeout: 20m
           envs: TARGET_ENV,DEV_SERVER_DIR,PROD_SERVER_DIR
           script: |
             set -euo pipefail
