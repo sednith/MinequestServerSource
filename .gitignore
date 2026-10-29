@@ -8,6 +8,9 @@ logs/
 **/server_console
 .screen/
 ops.json
+**/banned-ips.json
+**/banned-players.json
+**/whitelist.json
 **/plugins/spark/
 usercache.json
 crash-reports/
@@ -22,6 +25,10 @@ cache/
 
 overrides/
 checker-report/
+/.last-good-deploy-sha
+/.last-good-deploy-sha.tmp
+/.scheduled-prod-restart-state
+/.scheduled-prod-restart-state.tmp
 # WORLD
 **/world/*
 !**/world/dimensions/
