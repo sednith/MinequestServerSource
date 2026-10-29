@@ -115,9 +115,19 @@ echo "[STAGE 1/4] Sync git & Apply Overrides"
 echo "-----------------------------------------"
 
 echo "[INFO] Синхронизация с origin/dev..."
+PRE_SYNC_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"
 git fetch origin dev
 git checkout -f -B dev origin/dev
 git reset --hard origin/dev
+
+# Сценарий читается из рабочего дерева, которое сам же и обновляет: если в этом
+# пуше изменился deploy-dev.sh, работающий bash дочитает старый файл и выполнит
+# устаревший код поверх новых скриптов. Перезапускаемся на актуальной версии.
+if [[ -n "$PRE_SYNC_HEAD" && "$PRE_SYNC_HEAD" != "$(git rev-parse HEAD 2>/dev/null || true)" && "${DEPLOY_DEV_REEXEC:-0}" != 1 ]]; then
+    echo "[INFO] Рабочее дерево обновилось; перезапуск deploy-dev.sh на актуальной версии"
+    export DEPLOY_DEV_REEXEC=1
+    exec bash "$SCRIPT_DIR/deploy-dev.sh"
+fi
 
 echo "[INFO] Проверка заданного порядка рестарта серверов..."
 validate_server_order

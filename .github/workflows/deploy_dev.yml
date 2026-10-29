@@ -28,5 +28,14 @@ jobs:
           envs: DEV_SERVER_DIR
           script: |
             set -euo pipefail
+
             cd "$DEV_SERVER_DIR"
+
+            # Синхронизируем дерево до запуска сценария: deploy-dev.sh сам делает
+            # checkout, и если он изменён этим же пушем, bash может дочитать
+            # старую версию файла и выполнить устаревший код.
+            git fetch origin dev
+            git checkout -f -B dev origin/dev
+            git reset --hard origin/dev
+
             bash ./scripts/deploy-dev.sh
