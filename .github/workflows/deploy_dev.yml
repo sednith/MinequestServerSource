@@ -24,6 +24,7 @@ jobs:
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.REMOTE_PORT }}
+          command_timeout: 20m
           envs: DEV_SERVER_DIR
           script: |
             set -euo pipefail

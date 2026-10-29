@@ -1,129 +1,131 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/common.sh"
 
+SERVER_RESTART_ORDER=(playworld adjustment velocity)
+TARGET_ENV="${1:-}"
+NO_ROLLBACK=false
+ROLLBACK_AVAILABLE=false
+LAST_GOOD_SHA_FILE="$PROJECT_ROOT/.last-good-deploy-sha"
+
 usage() {
-    echo "Использование: bash scripts/restart.sh <имя-папки-сервера>" >&2
+    echo "Использование: bash scripts/restart.sh <dev|prod> [--no-rollback]" >&2
 }
 
-if (( $# != 1 )); then
+if (( $# < 1 || $# > 2 )); then
     usage
     exit 2
 fi
-
-resolve_server "$1" || exit $?
-resolve_server_jar || exit 1
-
-FIFO="$SERVER_DIR/server_console"
-PID_FILE="$SERVER_DIR/.server.pid"
-LOG_FILE="$SERVER_DIR/logs/latest.log"
-TIMEOUT=120
-CHECK_INTERVAL=2
-STOP_TIMEOUT=30
-RESTART_WAIT=7
-
-if [[ ! -s "$PID_FILE" ]]; then
-    log "[ERROR] PID-файл не найден: $PID_FILE. Запустите сервер через scripts/startserver.sh '$SERVER_NAME'"
-    exit 1
-fi
-OLD_PID="$(cat "$PID_FILE")"
-if ! server_pid_is_valid "$OLD_PID" "$SERVER_DIR"; then
-    log "[ERROR] PID $OLD_PID не соответствует запущенному ядру в $SERVER_DIR"
-    exit 1
-fi
-if [[ ! -p "$FIFO" ]]; then
-    log "[ERROR] FIFO не найден: $FIFO"
-    exit 1
-fi
-
-if [[ -f "$LOG_FILE" ]]; then
-    LOG_SIZE_BEFORE=$(wc -c < "$LOG_FILE")
-    LOG_INODE_BEFORE=$(stat -c '%i' -- "$LOG_FILE")
-else
-    LOG_SIZE_BEFORE=0
-    LOG_INODE_BEFORE=""
-fi
-
-log "[INFO] Перезапуск $SERVER_NAME (PID $OLD_PID)"
-printf '%s\n' "$(server_stop_command)" > "$FIFO"
-
-WAIT=0
-while server_pid_is_valid "$OLD_PID" "$SERVER_DIR"; do
-    if (( WAIT >= STOP_TIMEOUT )); then
-        if server_pid_is_valid "$OLD_PID" "$SERVER_DIR"; then
-            log "[ERROR] $SERVER_NAME не остановился за ${STOP_TIMEOUT}с; посылаю TERM только PID $OLD_PID"
-            kill -TERM "$OLD_PID" 2>/dev/null || true
-        fi
-        break
+case "$TARGET_ENV" in
+    dev|prod) ;;
+    *) usage; exit 2 ;;
+esac
+if (( $# == 2 )); then
+    if [[ "$2" != "--no-rollback" ]]; then
+        usage
+        exit 2
     fi
-    sleep 1
-    ((WAIT += 1))
+    NO_ROLLBACK=true
+fi
+
+# Validate every server before stopping any of them, so configuration mistakes
+# do not leave the stand partially restarted.
+for server in "${SERVER_RESTART_ORDER[@]}"; do
+    resolve_server "$server" || exit $?
+    resolve_server_jar || exit 1
+    if [[ ! -r "$SERVER_DIR/java-args" ]]; then
+        log "[ERROR] Не найден файл аргументов Java: $SERVER_DIR/java-args"
+        exit 1
+    fi
 done
 
-log "[INFO] Ожидание автоматического перезапуска (${RESTART_WAIT}с)..."
-sleep "$RESTART_WAIT"
+log "[INFO] Окружение: $TARGET_ENV"
+log "[INFO] PROJECT_ROOT: $PROJECT_ROOT"
+log "[INFO] Последовательный рестарт серверов: ${SERVER_RESTART_ORDER[*]}"
 
-ELAPSED=0
-NEW_PID=""
-while (( ELAPSED < TIMEOUT )); do
-    if [[ -s "$PID_FILE" ]]; then
-        CANDIDATE_PID="$(cat "$PID_FILE")"
-        if [[ "$CANDIDATE_PID" != "$OLD_PID" ]] && server_pid_is_valid "$CANDIDATE_PID" "$SERVER_DIR"; then
-            NEW_PID="$CANDIDATE_PID"
-            break
+rollback_sha_is_valid() {
+    local sha
+    [[ -s "$LAST_GOOD_SHA_FILE" ]] || return 1
+    sha="$(tr -d '[:space:]' < "$LAST_GOOD_SHA_FILE")"
+    [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+    git -C "$PROJECT_ROOT" cat-file -e "${sha}^{commit}" 2>/dev/null
+}
+
+# A single restart per stand at a time: the second run must not fight over the
+# same FIFO/PID. The lock lives outside the worktree so git status stays clean.
+if [[ "${MINQUEST_RESTART_LOCK_HELD:-0}" != 1 ]]; then
+    if command -v flock >/dev/null 2>&1 && command -v sha1sum >/dev/null 2>&1; then
+        RESTART_LOCK_FILE="${TMPDIR:-/tmp}/minequest-restart-$(printf '%s' "$PROJECT_ROOT" | sha1sum | cut -c1-16).lock"
+        if ! exec 9>"$RESTART_LOCK_FILE"; then
+            log "[ERROR] Не удалось открыть файл блокировки: $RESTART_LOCK_FILE"
+            exit 1
         fi
+        if ! flock -n 9; then
+            log "[ERROR] Рестарт $PROJECT_ROOT уже выполняется другим процессом"
+            exit 1
+        fi
+        MINQUEST_RESTART_LOCK_HELD=1
+        export MINQUEST_RESTART_LOCK_HELD
+    else
+        log "[WARN] flock/sha1sum недоступны; блокировка параллельных рестартов отключена"
     fi
-    sleep "$CHECK_INTERVAL"
-    ((ELAPSED += CHECK_INTERVAL))
-done
+fi
 
-if [[ -z "$NEW_PID" ]]; then
-    log "[ERROR] $SERVER_NAME не перезапустился за ${TIMEOUT}с"
-    [[ -f "$LOG_FILE" ]] && tail -n 20 "$LOG_FILE"
+if [[ "$TARGET_ENV" == prod && "$NO_ROLLBACK" != true ]]; then
+    if rollback_sha_is_valid; then
+        ROLLBACK_AVAILABLE=true
+    else
+        log "[WARN] Откат недоступен: $LAST_GOOD_SHA_FILE отсутствует или содержит недействительный SHA; при неудаче PROD останется на развёрнутой версии"
+    fi
+fi
+
+# Secrets are rendered before any server is stopped; the same is true for DEV
+# overrides. A failure here leaves the running stand untouched.
+log "[INFO] Подстановка локальных секретов перед остановкой серверов"
+if ! python3 "$SCRIPT_DIR/render-secrets/render-secrets.py"; then
+    log "[ERROR] Не удалось подставить локальные секреты; ни один сервер не остановлен"
     exit 1
 fi
 
-log "[INFO] Новый процесс $SERVER_NAME запущен: PID $NEW_PID (предыдущий: $OLD_PID)"
-if [[ "$SERVER_KIND" == velocity ]]; then
-    READY_PATTERN='Done \([0-9.]+s\)!'
-    log "[INFO] Ожидание готовности Velocity по сообщению 'Done (...)!' в логе"
+if [[ "$TARGET_ENV" == dev ]]; then
+    log "[INFO] DEV: применение локальных overrides перед остановкой серверов"
+    if ! bash "$SCRIPT_DIR/apply-overrides.sh"; then
+        log "[ERROR] Не удалось применить overrides; ни один сервер не остановлен"
+        exit 1
+    fi
 else
-    READY_PATTERN='Done.*For help'
-    log "[INFO] Ожидание готовности Paper по сообщению 'Done ... For help' в логе"
+    log "[INFO] PROD: overrides не применяются (они существуют только для DEV)"
 fi
 
-ELAPSED=0
-while (( ELAPSED < TIMEOUT )); do
-    if ! server_pid_is_valid "$NEW_PID" "$SERVER_DIR"; then
-        log "[ERROR] Процесс $SERVER_NAME завершился до подтверждения готовности"
-        [[ -f "$LOG_FILE" ]] && tail -n 20 "$LOG_FILE"
+for server in "${SERVER_RESTART_ORDER[@]}"; do
+    log "[INFO] Рестарт сервера '$server' с проверкой готовности..."
+    if bash "$SCRIPT_DIR/restart-server.sh" "$server"; then
+        continue
+    fi
+
+    log "[ERROR] Рестарт '$server' завершился ошибкой"
+    if [[ "$TARGET_ENV" != prod ]]; then
+        log "[ERROR] Остальные серверы не перезапускаются; для DEV откат не предусмотрен"
+        exit 1
+    fi
+    if [[ "$NO_ROLLBACK" == true ]]; then
+        log "[ERROR] Остальные серверы не перезапускаются; откат отключён (--no-rollback)"
+        exit 1
+    fi
+    if [[ "$ROLLBACK_AVAILABLE" != true ]]; then
+        log "[ERROR] Остальные серверы не перезапускаются; откат невозможен без подтверждённого SHA"
         exit 1
     fi
 
-    if [[ -f "$LOG_FILE" ]]; then
-        LOG_SIZE_NOW=$(wc -c < "$LOG_FILE")
-        LOG_INODE_NOW=$(stat -c '%i' -- "$LOG_FILE")
-        if [[ -n "$LOG_INODE_BEFORE" && "$LOG_INODE_NOW" != "$LOG_INODE_BEFORE" ]] \
-            || (( LOG_SIZE_NOW < LOG_SIZE_BEFORE )); then
-            log "[WARN] Обнаружена ротация лога; проверяю файл с начала"
-            LOG_SIZE_BEFORE=0
-            LOG_INODE_BEFORE="$LOG_INODE_NOW"
-        fi
-
-        START_BYTE=$((LOG_SIZE_BEFORE + 1))
-        if tail -c "+$START_BYTE" "$LOG_FILE" 2>/dev/null | grep -qE "$READY_PATTERN"; then
-            log "[OK] $SERVER_NAME успешно загружен за ${ELAPSED}с (PID $NEW_PID)"
-            exit 0
-        fi
+    log "[WARN] Откат PROD на последнюю успешную версию"
+    if bash "$SCRIPT_DIR/rollback-prod.sh"; then
+        log "[ERROR] PROD откачен на последнюю успешную версию и перезапущен"
+    else
+        log "[CRITICAL] Откат PROD завершился ошибкой; требуется ручное вмешательство"
     fi
-
-    sleep "$CHECK_INTERVAL"
-    ((ELAPSED += CHECK_INTERVAL))
+    exit 1
 done
 
-log "[ERROR] $SERVER_NAME не сообщил о готовности за ${TIMEOUT}с"
-log "[INFO] Последние строки лога:"
-[[ -f "$LOG_FILE" ]] && tail -n 20 "$LOG_FILE"
-exit 1
+log "[OK] Все серверы стенда $TARGET_ENV успешно перезапущены и проверены"

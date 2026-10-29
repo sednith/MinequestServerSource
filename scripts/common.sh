@@ -75,7 +75,7 @@ server_pid_is_valid() {
     [[ -r "/proc/$pid/cmdline" ]] || return 1
     actual_dir="$(readlink "/proc/$pid/cwd" 2>/dev/null)" || return 1
     [[ "$actual_dir" == "$expected_dir" ]] || return 1
-    cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" || return 1
+    cmdline="$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null )" || return 1
     [[ "$cmdline" == *"-jar"* && "$cmdline" == *"$(basename -- "$SERVER_JAR")"* ]]
 }
 
