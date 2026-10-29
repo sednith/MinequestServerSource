@@ -1,0 +1,54 @@
+name: Scheduled PROD restart
+run-name: Scheduled PROD restart (${{ inputs.stage || github.event.schedule }})
+
+on:
+  schedule:
+    # Moscow time (MSK, UTC+3): lobby 04:45, playworld 05:00, Velocity 05:15.
+    - cron: '45 1 * * *'
+    - cron: '0 2 * * *'
+    - cron: '15 2 * * *'
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Server restart stage
+        required: true
+        type: choice
+        options:
+          - adjustment
+          - playworld
+          - velocity
+
+concurrency:
+  group: minecraft-server-deploy
+  cancel-in-progress: false
+
+env:
+  PROD_SERVER_DIR: /home/server/prod
+
+jobs:
+  restart:
+    name: Restart and verify PROD servers
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Restart PROD servers on schedule over SSH
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          RESTART_STAGE: ${{ inputs.stage || (github.event.schedule == '45 1 * * *' && 'adjustment') || (github.event.schedule == '0 2 * * *' && 'playworld') || (github.event.schedule == '15 2 * * *' && 'velocity') }}
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          command_timeout: 45m
+          envs: PROD_SERVER_DIR,RESTART_STAGE
+          script: |
+            set -euo pipefail
+
+            if [ ! -d "$PROD_SERVER_DIR" ]; then
+              echo "[ERROR] PROD directory does not exist: $PROD_SERVER_DIR" >&2
+              exit 1
+            fi
+
+            cd "$PROD_SERVER_DIR"
+            bash ./scripts/scheduled-restart.sh "$RESTART_STAGE"

@@ -24,6 +24,8 @@ overrides/
 checker-report/
 /.last-good-deploy-sha
 /.last-good-deploy-sha.tmp
+/.scheduled-prod-restart-state
+/.scheduled-prod-restart-state.tmp
 # WORLD
 **/world/*
 !**/world/dimensions/
