@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly PROD restart: velocity (05:15 MSK)
+
+[Timer]
+OnCalendar=*-*-* 05:15:00 Europe/Moscow
+AccuracySec=1s
+Persistent=false
+Unit=prod-restart@velocity.service
+
+[Install]
+WantedBy=timers.target

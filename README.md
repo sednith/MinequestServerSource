@@ -68,11 +68,10 @@ EOF
 
 ```
 .
-├── .github/workflows/          # 5 пайплайнов GitHub Actions
+├── .github/workflows/          # 4 пайплайна GitHub Actions
 │   ├── deploy_dev.yml
 │   ├── release.yml
 │   ├── restart_servers.yml
-│   ├── scheduled_prod_restart.yml
 │   └── start_servers.yml
 ├── adjustment/                 # Paper-сервер: лобби
 │   ├── paper-26.3-226.jar
@@ -103,6 +102,11 @@ EOF
 │       ├── render-secrets.py
 │       ├── render-secrets.properties  # манифест секретных файлов
 │       └── snapshot-configs.py
+├── deploy/systemd/             # systemd-таймеры ночного рестарта PROD, 04:45 / 05:00 / 05:15 MSK
+│   ├── prod-restart@.service
+│   ├── prod-restart-{adjustment,playworld,velocity}.timer
+│   ├── install.sh              # установка, NTP, удаление
+│   └── set-schedule.sh         # смена расписания этапов
 ├── overrides/                  # локально, git-ignored
 ├── .checkerignore              # правила для Checker
 └── .gitignore
@@ -141,14 +145,14 @@ EOF
 
 - **Ядро** определяется по имени jar: `velocity*.jar` → Velocity, всё остальное → Paper.
 - **Порядок рестарта** в `restart.sh`: `playworld → adjustment → velocity` (сначала бэкенды, потом прокси, чтобы игроки не ловили «connection refused»).
-- **Порядок ночного рестарта** (`scheduled-restart.sh`): `adjustment → playworld → velocity` с паузами 15 минут, чтобы новый код сначала обкатался на лобби.
+- **Порядок ночного рестарта** (`scheduled-restart.sh`): `adjustment → playworld → velocity`; скрипт выполняет один этап, а интервал в 15 минут между этапами обеспечивают systemd-таймеры (04:45 → 05:00 → 05:15), чтобы новый код сначала обкатался на лобби.
 - Каждый сервер пишет `.server.pid`, общается с супервизором через FIFO `server_console`, а супервизор (`startserver.sh`) автоматически поднимает процесс через 5 секунд после падения.
 
 ---
 
 ## GitHub Actions: пайплайны
 
-Все пять пайплайнов используют одну и ту же concurrency-группу `minecraft-server-deploy` с `cancel-in-progress: false`. Это значит: **любые два деплоя/рестарта выполняются строго последовательно**, второй ждёт первый. Это защита от одновременного рестарта и раскатки.
+Все четыре пайплайна используют одну и ту же concurrency-группу `minecraft-server-deploy` с `cancel-in-progress: false`. Это значит: **любые два деплоя/рестарта выполняются строго последовательно**, второй ждёт первый. Это защита от одновременного рестарта и раскатки.
 
 ### Требуемые GitHub Secrets
 
@@ -160,7 +164,7 @@ EOF
 | `SSH_PRIVATE_KEY` | Приватный ключ для SSH |
 | `RELEASE_TOKEN` | PAT с правами записи (push в `main`, `dev` и теги) — используется только в `release.yml` |
 
-Значения секретов не выводятся в логах. Все пайплайны ходят на сервер через `appleboy/ssh-action` с `command_timeout: 20m`.
+Значения секретов не выводятся в логах. Все пайплайны ходят на сервер через `appleboy/ssh-action`, но `command_timeout: 20m` задан только в трёх из четырёх: `deploy_dev.yml`, `release.yml` и `restart_servers.yml`, а в `start_servers.yml` используется значение по умолчанию (10 минут).
 
 ---
 
@@ -278,18 +282,15 @@ EOF
 
 ---
 
-### 5. `scheduled_prod_restart.yml` — Scheduled PROD restart
+### 5. Ночной рестарт PROD — systemd-таймеры (вне GitHub Actions)
 
-**Что это.** Ночной рестарт PROD с раскаткой уже развёрнутого кода и защитой откатом.
+**Что это.** Ночной рестарт PROD с раскаткой уже развёрнутого кода и защитой откатом. Расписание живёт **на самом сервере**: пайплайна для ночного рестарта в GitHub Actions больше нет. Причина — `schedule` в Actions работает по принципу best-effort: 30.10.2026 запуск по cron вместо 04:45 МСК пришёл только около 11:00.
 
-**Когда запускается.**
+**Когда запускается.** Три systemd-таймера на сервере: **04:45 / 05:00 / 05:15 МСК** (по одному на этап). Установка: `sudo bash deploy/systemd/install.sh --ntp`, подробности — в `deploy/systemd/README.md`.
 
-- По расписанию: `cron: '45 1 * * *'` (UTC) = **04:45 МСК**.
-- Вручную: **Actions → Scheduled PROD restart → Run workflow**, `stage` = `all` | `adjustment` | `playworld` | `velocity`.
+**Что делает.**
 
-**Что делает.** Три последовательных job'а с паузой 900 секунд (15 минут):
-
-| Время (МСК) | Job | Действие |
+| Время (МСК) | Этап | Действие |
 |---|---|---|
 | 04:45 | `adjustment` | Рестарт лобби, фиксирует `target_sha` и `last_good_sha` в state-файл |
 | 05:00 | `playworld` | Рестарт основного мира |
@@ -302,7 +303,15 @@ EOF
 - при падении любого этапа откатывает PROD на last-good через `rollback-prod.sh` и помечает день как неуспешный;
 - пишет прогресс в `.scheduled-prod-restart-state` (git-ignored).
 
-**Как пользоваться.** Обычно — не трогать, работает само. Вручную полезно, чтобы прогнать один этап (`stage=velocity`) или повторить ночной цикл днём (`stage=all`).
+**Как пользоваться.** Обычно — не трогать, работает само. Вручную (на сервере, от root):
+
+```bash
+systemctl start prod-restart@adjustment   # начало цикла
+systemctl start prod-restart@velocity     # только один этап
+systemctl list-timers 'prod-restart*'     # что и когда запустится
+```
+
+Повторный запуск этапа в тот же день безопасен: скрипт ответит «этап уже выполнен сегодня».
 
 > [!WARNING]
 > Этап `playworld` не запустится, если лобби не прошло проверку; `velocity` — если не прошли оба предыдущих. Это осознанная деградация «лучше не поднимать дальше, чем поднять всё сломанным».
@@ -311,7 +320,7 @@ EOF
 
 ## Скрипты
 
-Все скрипты лежат в `scripts/` и запускаются **на сервере**, из корня чекаута. Ручной запуск — только по необходимости, в обычной работе их вызывают пайплайны.
+Все скрипты лежат в `scripts/` и запускаются **на сервере**, из корня чекаута. Ручной запуск — только по необходимости, в обычной работе их вызывают пайплайны GitHub Actions и systemd-таймеры ночного рестарта.
 
 | Скрипт | Что делает | Кто вызывает |
 |---|---|---|
@@ -320,7 +329,7 @@ EOF
 | `startserver.sh <server>` | Супервизор одного сервера: FIFO, PID-файл, автоперезапуск через 5 с, корректная остановка по `stop`/`shutdown`. | `start-all.sh` |
 | `restart.sh <dev\|prod> [--no-rollback]` | Рендер секретов (+ overrides на dev), затем рестарт всех серверов. На prod умеет откат. Защищён от параллельного запуска через `flock`. | `restart_servers.yml`, `deploy-dev.sh`, `rollback-prod.sh` |
 | `restart-server.sh <server>` | Рестарт одного сервера: команда в FIFO → ожидание остановки (30 с) → ожидание нового PID → ожидание маркера готовности (120 с). | `restart.sh`, `scheduled-restart.sh` |
-| `scheduled-restart.sh <stage>` | Один этап ночного рестарта: state-файл, защита от повторного запуска, откат при ошибке, обновление last-good SHA. | `scheduled_prod_restart.yml` |
+| `scheduled-restart.sh <stage>` | Один этап ночного рестарта: state-файл, защита от повторного запуска, откат при ошибке, обновление last-good SHA. | `prod-restart@<stage>.service` (systemd) |
 | `rollback-prod.sh` | Откат PROD на SHA из `.last-good-deploy-sha`, рендер секретов, рестарт. Копирует скрипты в `.rollback-scripts.<pid>`, чтобы пережить checkout старого дерева. | `restart.sh`, `scheduled-restart.sh` |
 | `deploy-dev.sh` | Полный dev-деплой: sync → overrides → commit B → secrets → baseline → рестарт → Checker → cleanup. | `deploy_dev.yml` |
 | `checker.sh` | Сравнивает состояние после запуска с зафиксированным baseline, применяет `.checkerignore`, пишет отчёты. | `deploy-dev.sh` |
@@ -711,12 +720,12 @@ git push origin dev
 
 Обычный релиз **не перезапускает** серверы. Варианты:
 
-- **Ночью автоматически** — `Scheduled PROD restart` в 04:45 МСК: лобби в 04:45, основной мир в 05:00, прокси в 05:15.
+- **Ночью автоматически** — systemd-таймеры на сервере: лобби в 04:45, основной мир в 05:00, прокси в 05:15 МСК (см. `deploy/systemd/README.md`).
 - **Днём вручную** — **Actions → Restart Minecraft Servers**, `environment=prod`. При неудаче PROD сам откатится на последнюю успешную версию.
 
 ### Шаг 11. Проверить PROD
 
-- Job `Scheduled/Manual restart` зелёный.
+- `systemctl list-timers 'prod-restart*'` — все три таймера с непустым `LAST`, `systemctl status prod-restart@<stage>.service` не `failed`.
 - `.last-good-deploy-sha` на PROD обновился на новый SHA (это делает успешный ночной цикл или релиз/хотфикс с `restart_prod=true`).
 - В игре всё работает на боевых портах.
 
