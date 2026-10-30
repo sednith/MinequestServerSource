@@ -27,9 +27,7 @@ EOF
 }
 
 timesyncd_available() {
-    local units
-    units="$(systemctl list-unit-files systemd-timesyncd.service 2>/dev/null || true)"
-    [[ "$units" == *"systemd-timesyncd.service"* ]]
+    systemctl is-enabled --quiet systemd-timesyncd.service >/dev/null 2>&1
 }
 
 configure_ntp() {
@@ -51,7 +49,10 @@ EOF
         log "[INFO] NTP-конфиг уже существует, оставляю как есть: $NTP_DROPIN"
     fi
 
-    systemctl restart systemd-timesyncd
+    if ! systemctl restart systemd-timesyncd; then
+        log "[ERROR] Не удалось перезапустить systemd-timesyncd. Проверьте: systemctl status systemd-timesyncd"
+        return 1
+    fi
 
     local waited=0
     while (( waited < 60 )); do
@@ -137,7 +138,9 @@ uninstall_units() {
     if [[ "$WITH_NTP" == "true" && -e "$NTP_DROPIN" ]]; then
         rm -f "$NTP_DROPIN"
         if timesyncd_available; then
-            systemctl restart systemd-timesyncd
+            if ! systemctl restart systemd-timesyncd; then
+                log "[ERROR] Не удалось перезапустить systemd-timesyncd"
+            fi
         fi
         log "[OK] Удалён NTP-конфиг: $NTP_DROPIN"
     fi

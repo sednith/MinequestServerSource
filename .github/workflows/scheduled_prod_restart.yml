@@ -59,7 +59,7 @@ jobs:
     needs: adjustment
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    if: ${{ !cancelled() && needs.adjustment.result != 'failure' && (inputs.stage == 'all' || inputs.stage == 'playworld') }}
+    if: ${{ !cancelled() && (needs.adjustment.result == 'success' || (needs.adjustment.result == 'skipped' && inputs.stage == 'playworld')) }}
     steps:
       - name: Wait for the next stage slot
         if: ${{ inputs.stage == 'all' }}
@@ -91,7 +91,7 @@ jobs:
     needs: playworld
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    if: ${{ !cancelled() && needs.playworld.result != 'failure' && (inputs.stage == 'all' || inputs.stage == 'velocity') }}
+    if: ${{ !cancelled() && (needs.playworld.result == 'success' || (needs.playworld.result == 'skipped' && inputs.stage == 'velocity')) }}
     steps:
       - name: Wait for the next stage slot
         if: ${{ inputs.stage == 'all' }}

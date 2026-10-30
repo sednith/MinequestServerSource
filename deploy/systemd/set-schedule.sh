@@ -93,8 +93,12 @@ apply_schedule() {
         return 1
     fi
 
-    if ! check_calendar; then
+    local calendar_output
+    if ! calendar_output="$(check_calendar 2>&1)"; then
         log "[ERROR] systemd не смог разобрать новые времена (systemd-analyze calendar)"
+        if [[ -n "$calendar_output" ]]; then
+            printf '%s\n' "$calendar_output"
+        fi
         return 1
     fi
 
@@ -176,7 +180,9 @@ if [[ "$APPLY" == "true" ]]; then
     exit 0
 fi
 
-show_current
 print_plan
 check_calendar
+if ! show_current; then
+    log "[INFO] Текущее расписание не показано — на проверку новых времён это не влияет"
+fi
 exit 0

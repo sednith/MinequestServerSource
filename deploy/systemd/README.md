@@ -39,10 +39,15 @@
 sudo bash deploy/systemd/install.sh
 ```
 
-Скрипт копирует юниты в `/etc/systemd/system`, делает `daemon-reload`,
-включает и перезапускает таймеры (поэтому повторная установка подхватывает
-изменения расписания), проверяет юниты через `systemd-analyze verify` и печатает
-`systemctl list-timers 'prod-restart*' --all --no-pager`.
+Скрипт копирует юниты в `/etc/systemd/system`, делает `daemon-reload`, проверяет
+юниты через `systemd-analyze verify`, включает и перезапускает таймеры, а затем
+печатает `systemctl list-timers 'prod-restart*' --all --no-pager`.
+
+Повторная установка обновляет базовые юниты и перезапускает таймеры, но если
+расписание задавалось через `set-schedule.sh --apply`, приоритет у drop-in'а
+`10-schedule.conf`: базовое `OnCalendar=` из юнита он перебивает. Сбросить
+drop-in'ы можно `install.sh --uninstall` (с последующей установкой) или повторным
+`set-schedule.sh --apply` с нужными временами.
 
 С настройкой синхронизации времени:
 
