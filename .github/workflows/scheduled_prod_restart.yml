@@ -1,11 +1,7 @@
 name: Scheduled PROD restart
-run-name: Scheduled PROD restart (${{ inputs.stage || github.event.schedule }})
+run-name: Scheduled PROD restart (${{ inputs.stage }})
 
 on:
-  schedule:
-    # Moscow time (MSK, UTC+3): lobby 04:45. Playworld and Velocity run in the
-    # same workflow run after a pause on the runner (05:00 and 05:15 MSK).
-    - cron: '45 1 * * *'
   workflow_dispatch:
     inputs:
       stage:
@@ -25,7 +21,8 @@ concurrency:
 
 env:
   PROD_SERVER_DIR: /home/server/prod
-  # Пауза между этапами ночного рестарта: 04:45 -> 05:00 -> 05:15 MSK.
+  # Пауза между этапами ручного запуска `stage: all`: 04:45 -> 05:00 -> 05:15 MSK.
+  # Ночной рестарт теперь выполняется на сервере systemd-таймерами (deploy/systemd).
   STAGE_PAUSE_SECONDS: 900
 
 jobs:
@@ -33,7 +30,7 @@ jobs:
     name: Restart lobby (adjustment)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ github.event_name == 'schedule' || inputs.stage == 'all' || inputs.stage == 'adjustment' }}
+    if: ${{ inputs.stage == 'all' || inputs.stage == 'adjustment' }}
     steps:
       - name: Restart lobby over SSH
         uses: appleboy/ssh-action@v1.0.0
@@ -62,7 +59,7 @@ jobs:
     needs: adjustment
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !cancelled() && needs.adjustment.result != 'failure' && (github.event_name == 'schedule' || inputs.stage == 'all' || inputs.stage == 'playworld') }}
+    if: ${{ !cancelled() && needs.adjustment.result != 'failure' && (inputs.stage == 'all' || inputs.stage == 'playworld') }}
     steps:
       - name: Wait for the next stage slot
         run: sleep "$STAGE_PAUSE_SECONDS"
@@ -93,7 +90,7 @@ jobs:
     needs: playworld
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ !cancelled() && needs.playworld.result != 'failure' && (github.event_name == 'schedule' || inputs.stage == 'all' || inputs.stage == 'velocity') }}
+    if: ${{ !cancelled() && needs.playworld.result != 'failure' && (inputs.stage == 'all' || inputs.stage == 'velocity') }}
     steps:
       - name: Wait for the next stage slot
         run: sleep "$STAGE_PAUSE_SECONDS"

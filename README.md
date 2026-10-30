@@ -284,10 +284,10 @@ EOF
 
 **Когда запускается.**
 
-- По расписанию: `cron: '45 1 * * *'` (UTC) = **04:45 МСК**.
-- Вручную: **Actions → Scheduled PROD restart → Run workflow**, `stage` = `all` | `adjustment` | `playworld` | `velocity`.
+- Ночью — автоматически: systemd-таймеры на сервере в **04:45 / 05:00 / 05:15 МСК** (по одному на этап). Установка: `sudo bash deploy/systemd/install.sh --ntp`, подробности — в `deploy/systemd/README.md`.
+- Вручную: **Actions → Scheduled PROD restart → Run workflow**, `stage` = `all` | `adjustment` | `playworld` | `velocity`. В GitHub Actions остался только ручной запуск (`workflow_dispatch`) — `schedule` из workflow удалён.
 
-**Что делает.** Три последовательных job'а с паузой 900 секунд (15 минут):
+**Что делает.** Ночью каждый этап запускает свой таймер, вручную — три последовательных job'а с паузой 900 секунд (15 минут):
 
 | Время (МСК) | Job | Действие |
 |---|---|---|

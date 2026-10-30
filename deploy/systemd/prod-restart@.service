@@ -1,0 +1,12 @@
+[Unit]
+Description=Minequest PROD scheduled restart (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/server/prod
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/bin/bash /home/server/prod/scripts/scheduled-restart.sh %i
+TimeoutStartSec=30min

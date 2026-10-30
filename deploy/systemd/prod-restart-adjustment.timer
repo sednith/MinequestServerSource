@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly PROD restart: lobby (04:45 MSK)
+
+[Timer]
+OnCalendar=*-*-* 04:45:00 Europe/Moscow
+AccuracySec=1s
+Persistent=false
+Unit=prod-restart@adjustment.service
+
+[Install]
+WantedBy=timers.target
