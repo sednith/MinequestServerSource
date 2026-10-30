@@ -62,7 +62,9 @@ sudo bash deploy/systemd/install.sh --uninstall
 ```
 
 `--uninstall` не трогает данные PROD, `.scheduled-prod-restart-state` и NTP-конфиг
-(последний удаляется только вместе с `--ntp`).
+(последний удаляется только вместе с `--ntp`). Drop-in'ы расписания, созданные
+`set-schedule.sh --apply`, удаляются вместе с таймерами — иначе они бы перебили
+расписание после переустановки.
 
 ## Проверка
 
@@ -70,9 +72,8 @@ sudo bash deploy/systemd/install.sh --uninstall
 # список таймеров и их NEXT/LAST
 systemctl list-timers 'prod-restart*' --all --no-pager
 
-# статическая проверка юнитов
-systemd-analyze verify prod-restart@.service prod-restart-adjustment.timer \
-  prod-restart-playworld.timer prod-restart-velocity.timer
+# статическая проверка юнитов (из корня чекаута)
+systemd-analyze verify deploy/systemd/prod-restart@.service deploy/systemd/prod-restart-*.timer
 
 # журнал всех этапов
 journalctl -u 'prod-restart@*' --since today
@@ -86,13 +87,13 @@ cat /home/server/prod/.scheduled-prod-restart-state
 ## Смена расписания
 
 ```bash
-# показать текущее расписание и NEXT
-sudo bash deploy/systemd/set-schedule.sh
+# показать текущее расписание и NEXT (root не нужен)
+bash deploy/systemd/set-schedule.sh
 
-# показать план и проверить времена, ничего не меняя
-sudo bash deploy/systemd/set-schedule.sh 04:30 04:45 05:00
+# показать план и проверить времена, ничего не меняя (root не нужен)
+bash deploy/systemd/set-schedule.sh 04:30 04:45 05:00
 
-# записать drop-in'ы и применить
+# записать drop-in'ы и применить (нужен root)
 sudo bash deploy/systemd/set-schedule.sh --apply 04:30 04:45 05:00
 ```
 
@@ -105,10 +106,12 @@ sudo bash deploy/systemd/set-schedule.sh --apply 04:30 04:45 05:00
 - порядок этапов фиксирован: `adjustment -> playworld -> velocity`, поменять его
   расписанием нельзя.
 
-При `--apply` создаются drop-in'ы
+При `--apply` сначала проверяется, что таймеры установлены и что новые времена
+парсятся systemd, и только затем создаются drop-in'ы
 `/etc/systemd/system/prod-restart-<stage>.timer.d/10-schedule.conf` с пустым
-`OnCalendar=` (сброс базового значения), затем выполняется `daemon-reload` и
-перезапуск таймеров.
+`OnCalendar=` (сброс базового значения), после чего выполняется `daemon-reload` и
+перезапуск таймеров. Если таймеры не установлены, `--apply` завершится ошибкой,
+не оставив частично применённое состояние.
 
 ## Логи и диагностика
 
@@ -132,9 +135,13 @@ screen-супервизоры (`startserver.sh`) после перезагруз
 
 ## Окно деплоя
 
-Не запускайте деплой в 04:40–05:40 MSK. Таймеры и деплой не синхронизированы:
-возможна гонка за FIFO/PID, а также замена скриптов в `/home/server/prod` во время
-выполнения этапа.
+В 04:40–05:40 MSK не запускайте ни деплой, ни ручные рестарты:
+`Scheduled PROD restart` с любым `stage` (`all`, `adjustment`, `playworld`,
+`velocity`) и `Restart Minecraft Servers` (`environment=prod`).
+
+Таймеры systemd не входят в concurrency-группу GitHub Actions: workflow и ночные
+этапы не знают друг о друге. Возможна гонка за FIFO/PID, а также замена скриптов
+в `/home/server/prod` во время выполнения этапа.
 
 ## Переход с root на отдельного пользователя
 

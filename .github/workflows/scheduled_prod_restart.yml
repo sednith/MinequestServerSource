@@ -29,7 +29,7 @@ jobs:
   adjustment:
     name: Restart lobby (adjustment)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     if: ${{ inputs.stage == 'all' || inputs.stage == 'adjustment' }}
     steps:
       - name: Restart lobby over SSH
@@ -58,10 +58,11 @@ jobs:
     name: Restart playworld
     needs: adjustment
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     if: ${{ !cancelled() && needs.adjustment.result != 'failure' && (inputs.stage == 'all' || inputs.stage == 'playworld') }}
     steps:
       - name: Wait for the next stage slot
+        if: ${{ inputs.stage == 'all' }}
         run: sleep "$STAGE_PAUSE_SECONDS"
       - name: Restart playworld over SSH
         uses: appleboy/ssh-action@v1.0.0
@@ -89,10 +90,11 @@ jobs:
     name: Restart velocity
     needs: playworld
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     if: ${{ !cancelled() && needs.playworld.result != 'failure' && (inputs.stage == 'all' || inputs.stage == 'velocity') }}
     steps:
       - name: Wait for the next stage slot
+        if: ${{ inputs.stage == 'all' }}
         run: sleep "$STAGE_PAUSE_SECONDS"
       - name: Restart velocity over SSH
         uses: appleboy/ssh-action@v1.0.0

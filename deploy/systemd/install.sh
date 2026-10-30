@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SYSTEMD_DIR=/etc/systemd/system
-PROD_DIR="${PROD_DIR:-/home/server/prod}"
+PROD_DIR=/home/server/prod
 NTP_DROPIN=/etc/systemd/timesyncd.conf.d/50-minequest.conf
 
 UNITS=(prod-restart@.service prod-restart-adjustment.timer prod-restart-playworld.timer prod-restart-velocity.timer)
@@ -26,7 +26,18 @@ usage() {
 EOF
 }
 
+timesyncd_available() {
+    local units
+    units="$(systemctl list-unit-files systemd-timesyncd.service 2>/dev/null || true)"
+    [[ "$units" == *"systemd-timesyncd.service"* ]]
+}
+
 configure_ntp() {
+    if ! timesyncd_available; then
+        log "[ERROR] systemd-timesyncd не найден: установите его или настройте время другим способом. Таймеры уже установлены, время не настроено"
+        return 1
+    fi
+
     mkdir -p /etc/systemd/timesyncd.conf.d
 
     if [[ ! -e "$NTP_DROPIN" ]]; then
@@ -68,18 +79,17 @@ verify_units() {
         return 1
     fi
 
-    if grep -qi 'error' <<<"$output"; then
-        log "[ERROR] systemd-analyze verify вернул ошибки в выводе"
-        printf '%s\n' "$output"
-        return 1
-    fi
-
     if [[ -n "$output" ]]; then
         printf '%s\n' "$output"
     fi
 }
 
 install_units() {
+    if [[ ! -r "$PROD_DIR/scripts/scheduled-restart.sh" ]]; then
+        log "[ERROR] Не найден или недоступен $PROD_DIR/scripts/scheduled-restart.sh"
+        return 1
+    fi
+
     local unit
     for unit in "${UNITS[@]}"; do
         if [[ ! -f "$SCRIPT_DIR/$unit" ]]; then
@@ -91,10 +101,9 @@ install_units() {
     done
 
     systemctl daemon-reload
+    verify_units
     systemctl enable "${TIMERS[@]}"
     systemctl restart "${TIMERS[@]}"
-
-    verify_units
 
     systemctl list-timers 'prod-restart*' --all --no-pager || true
 
@@ -114,11 +123,22 @@ uninstall_units() {
         log "[OK] Удалён $SYSTEMD_DIR/$unit"
     done
 
+    local stage dropin_dir
+    for stage in adjustment playworld velocity; do
+        dropin_dir="$SYSTEMD_DIR/prod-restart-${stage}.timer.d"
+        if [[ -d "$dropin_dir" ]]; then
+            rm -rf "$dropin_dir"
+            log "[OK] Удалён каталог drop-in: $dropin_dir"
+        fi
+    done
+
     systemctl daemon-reload
 
     if [[ "$WITH_NTP" == "true" && -e "$NTP_DROPIN" ]]; then
         rm -f "$NTP_DROPIN"
-        systemctl restart systemd-timesyncd
+        if timesyncd_available; then
+            systemctl restart systemd-timesyncd
+        fi
         log "[OK] Удалён NTP-конфиг: $NTP_DROPIN"
     fi
 
@@ -150,11 +170,6 @@ done
 
 if (( EUID != 0 )); then
     log "[ERROR] Запустите от root"
-    exit 1
-fi
-
-if [[ ! -r "$PROD_DIR/scripts/scheduled-restart.sh" ]]; then
-    log "[ERROR] Не найден или недоступен $PROD_DIR/scripts/scheduled-restart.sh"
     exit 1
 fi
 

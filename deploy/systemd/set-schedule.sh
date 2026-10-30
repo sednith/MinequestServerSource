@@ -14,9 +14,9 @@ log() {
 usage() {
     cat <<'EOF'
 Использование:
-  set-schedule.sh                            показать текущее расписание и NEXT
-  set-schedule.sh HH:MM HH:MM HH:MM          показать план и проверить (ничего не меняет)
-  set-schedule.sh --apply HH:MM HH:MM HH:MM  записать drop-in'ы и применить
+  set-schedule.sh                            показать текущее расписание и NEXT (без root)
+  set-schedule.sh HH:MM HH:MM HH:MM          показать план и проверить (без root)
+  set-schedule.sh --apply HH:MM HH:MM HH:MM  записать drop-in'ы и применить (нужен root)
 
 Времена задаются по MSK (Europe/Moscow) в порядке adjustment -> playworld -> velocity.
 Зазор между этапами — не меньше 5 минут, окно — 03:00–02:59 MSK.
@@ -88,6 +88,16 @@ check_calendar() {
 }
 
 apply_schedule() {
+    if ! systemctl cat "${TIMERS[@]}" >/dev/null 2>&1; then
+        log "[ERROR] Таймеры не установлены. Сначала: sudo bash deploy/systemd/install.sh"
+        return 1
+    fi
+
+    if ! check_calendar; then
+        log "[ERROR] systemd не смог разобрать новые времена (systemd-analyze calendar)"
+        return 1
+    fi
+
     local i stage dir
     for i in 0 1 2; do
         stage="${STAGES[$i]}"
@@ -127,11 +137,6 @@ for arg in "$@"; do
     esac
 done
 
-if (( EUID != 0 )); then
-    log "[ERROR] Запустите от root"
-    exit 1
-fi
-
 if (( ${#POSITIONAL[@]} == 0 )); then
     if [[ "$APPLY" == "true" ]]; then
         log "[ERROR] Для --apply нужны три времени: HH:MM HH:MM HH:MM"
@@ -162,6 +167,11 @@ TIMES=("${POSITIONAL[@]}")
 validate_order_and_gaps "${TIMES[0]}" "${TIMES[1]}" "${TIMES[2]}"
 
 if [[ "$APPLY" == "true" ]]; then
+    if (( EUID != 0 )); then
+        log "[ERROR] Для --apply нужен root"
+        exit 1
+    fi
+
     apply_schedule
     exit 0
 fi

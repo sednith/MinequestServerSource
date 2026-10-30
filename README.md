@@ -103,6 +103,11 @@ EOF
 │       ├── render-secrets.py
 │       ├── render-secrets.properties  # манифест секретных файлов
 │       └── snapshot-configs.py
+├── deploy/systemd/             # systemd-таймеры ночного рестарта PROD
+│   ├── prod-restart@.service
+│   ├── prod-restart-{adjustment,playworld,velocity}.timer  # 04:45 / 05:00 / 05:15 MSK
+│   ├── install.sh              # установка, NTP, удаление
+│   └── set-schedule.sh         # смена расписания этапов
 ├── overrides/                  # локально, git-ignored
 ├── .checkerignore              # правила для Checker
 └── .gitignore
@@ -141,7 +146,7 @@ EOF
 
 - **Ядро** определяется по имени jar: `velocity*.jar` → Velocity, всё остальное → Paper.
 - **Порядок рестарта** в `restart.sh`: `playworld → adjustment → velocity` (сначала бэкенды, потом прокси, чтобы игроки не ловили «connection refused»).
-- **Порядок ночного рестарта** (`scheduled-restart.sh`): `adjustment → playworld → velocity` с паузами 15 минут, чтобы новый код сначала обкатался на лобби.
+- **Порядок ночного рестарта** (`scheduled-restart.sh`): `adjustment → playworld → velocity`; скрипт выполняет один этап, а интервал в 15 минут между этапами обеспечивают systemd-таймеры (04:45 → 05:00 → 05:15), чтобы новый код сначала обкатался на лобби.
 - Каждый сервер пишет `.server.pid`, общается с супервизором через FIFO `server_console`, а супервизор (`startserver.sh`) автоматически поднимает процесс через 5 секунд после падения.
 
 ---
@@ -711,12 +716,12 @@ git push origin dev
 
 Обычный релиз **не перезапускает** серверы. Варианты:
 
-- **Ночью автоматически** — `Scheduled PROD restart` в 04:45 МСК: лобби в 04:45, основной мир в 05:00, прокси в 05:15.
+- **Ночью автоматически** — systemd-таймеры на сервере: лобби в 04:45, основной мир в 05:00, прокси в 05:15 МСК (см. `deploy/systemd/README.md`).
 - **Днём вручную** — **Actions → Restart Minecraft Servers**, `environment=prod`. При неудаче PROD сам откатится на последнюю успешную версию.
 
 ### Шаг 11. Проверить PROD
 
-- Job `Scheduled/Manual restart` зелёный.
+- `systemctl list-timers 'prod-restart*'` — все три таймера с непустым `LAST`, `systemctl status prod-restart@<stage>.service` не `failed`.
 - `.last-good-deploy-sha` на PROD обновился на новый SHA (это делает успешный ночной цикл или релиз/хотфикс с `restart_prod=true`).
 - В игре всё работает на боевых портах.
 
