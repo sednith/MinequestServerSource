@@ -4,6 +4,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/common.sh"
 
+if ! declare -F log_reports_ready >/dev/null 2>&1; then
+    log "[ERROR] scripts/common.sh не содержит log_reports_ready; обновите скрипты репозитория целиком"
+    exit 1
+fi
+
 SERVER_START_ORDER=(playworld adjustment velocity)
 START_TIMEOUT=300
 CHECK_INTERVAL=2
@@ -126,10 +131,16 @@ start_and_wait() {
     local server_dir="$PROJECT_ROOT/$server"
     local log_file="$server_dir/logs/latest.log"
     local log_size_before=0
+    local log_head_before=""
+    local log_change_logged=false
+    local log_size_now=""
+    local ready_now=false
+    local boot_pattern
     local ready_pattern
     local pid=""
     local elapsed=0
     local started_seconds=0
+    local LOG_CHECK_REGION=unknown
 
     resolve_server "$server" || return $?
     resolve_server_jar || return 1
@@ -177,6 +188,8 @@ start_and_wait() {
 
     if [[ -f "$log_file" ]]; then
         log_size_before="$(wc -c < "$log_file")"
+        log_size_before="${log_size_before//[[:space:]]/}"
+        log_head_before="$(log_head_fingerprint "$log_file" "$(log_head_probe_len "$log_size_before")")"
     fi
 
     started_seconds=$SECONDS
@@ -187,8 +200,10 @@ start_and_wait() {
     fi
 
     if [[ "$SERVER_KIND" == velocity ]]; then
+        boot_pattern='Booting up Velocity'
         ready_pattern='Done \([0-9.]+s\)!'
     else
+        boot_pattern='Starting minecraft server version'
         ready_pattern='Done.*For help'
     fi
 
@@ -209,14 +224,15 @@ start_and_wait() {
         fi
 
         if [[ -f "$log_file" ]]; then
-            local log_size_now
-            local start_byte
             log_size_now="$(wc -c < "$log_file")"
-            if (( log_size_now < log_size_before )); then
-                log_size_before=0
+            log_size_now="${log_size_now//[[:space:]]/}"
+            ready_now=false
+            log_reports_ready "$log_file" "$boot_pattern" "$ready_pattern" "$log_size_before" "$log_head_before" && ready_now=true
+            if [[ "$log_change_logged" != true && "$log_size_now" != "$log_size_before" ]]; then
+                log "[INFO] Лог $server изменился: size $log_size_before -> $log_size_now; режим проверки: $LOG_CHECK_REGION"
+                log_change_logged=true
             fi
-            start_byte=$((log_size_before + 1))
-            if tail -c "+$start_byte" "$log_file" 2>/dev/null | grep -qE "$ready_pattern"; then
+            if [[ "$ready_now" == true ]]; then
                 if [[ -z "$pid" ]] || ! server_pid_is_valid "$pid" "$server_dir"; then
                     log "[ERROR] Найден маркер готовности $server, но PID не подтверждён"
                     return 1
@@ -230,7 +246,7 @@ start_and_wait() {
         ((elapsed += CHECK_INTERVAL))
     done
 
-    log "[ERROR] $server не сообщил о готовности за ${START_TIMEOUT}с; следующие серверы запускаться не будут"
+    log "[ERROR] $server не сообщил о готовности за ${START_TIMEOUT}с (режим проверки: $LOG_CHECK_REGION); следующие серверы запускаться не будут"
     [[ -f "$log_file" ]] && tail -n 30 "$log_file"
     return 1
 }
