@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly PROD restart: main world (05:00 MSK)
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 Europe/Moscow
+AccuracySec=1s
+Persistent=false
+Unit=prod-restart@playworld.service
+
+[Install]
+WantedBy=timers.target
