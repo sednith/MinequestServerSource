@@ -255,7 +255,7 @@ EOF
 
 - Сначала подставляет `secrets` (на обоих стендах).
 - На `dev` дополнительно применяет `overrides/`.
-- Затем последовательно перезапускает `playworld → adjustment → velocity`, ожидая готовности каждого.
+- Затем последовательно перезапускает `playworld → adjustment → velocity`, ожидая готовности каждого. `Done` в логе засчитывается только после маркера старта нового прогона (`Booting up Velocity` / `Starting minecraft server version`); если в проверяемом участке лога нет маркера старта прогона, `Done` засчитывается сам по себе (запасной вариант).
 - На `prod` при падении любого сервера автоматически откатывается на `.last-good-deploy-sha` и перезапускает стенд на нём.
 - На `dev` отката нет — просто останавливается и падает с ошибкой.
 
@@ -276,7 +276,7 @@ EOF
 - запускает `playworld → adjustment → velocity` в Screen-сессиях `<env>-<server>`;
 - **идемпотентен**: если сервер уже работает (сессия + PID + порт совпадают), он не перезапускается, а просто ждёт готовности;
 - отказывается запускать второй экземпляр, если порт уже занят;
-- ждёт маркер готовности в логе до 300 секунд (`Done ... For help` для Paper, `Done (Xs)!` для Velocity).
+- ждёт маркер готовности в логе до 300 секунд (`Done ... For help` для Paper, `Done (Xs)!` для Velocity). `Done` засчитывается только после маркера старта нового прогона (`Starting minecraft server version` для Paper / `Booting up Velocity` для Velocity); если в проверяемом участке лога нет маркера старта прогона, `Done` засчитывается сам по себе (запасной вариант).
 
 **Как пользоваться.** Только для «поднять то, что лежит». Если сервер уже работает — пайплайн завершится успешно, ничего не трогая.
 
@@ -328,7 +328,7 @@ systemctl list-timers 'prod-restart*'     # что и когда запусти�
 | `start-all.sh <dev\|prod>` | Запуск всех серверов по порядку с ожиданием готовности. Идемпотентен. | `start_servers.yml` |
 | `startserver.sh <server>` | Супервизор одного сервера: FIFO, PID-файл, автоперезапуск через 5 с, корректная остановка по `stop`/`shutdown`. | `start-all.sh` |
 | `restart.sh <dev\|prod> [--no-rollback]` | Рендер секретов (+ overrides на dev), затем рестарт всех серверов. На prod умеет откат. Защищён от параллельного запуска через `flock`. | `restart_servers.yml`, `deploy-dev.sh`, `rollback-prod.sh` |
-| `restart-server.sh <server>` | Рестарт одного сервера: команда в FIFO → ожидание остановки (30 с) → ожидание нового PID → ожидание маркера готовности (120 с). | `restart.sh`, `scheduled-restart.sh` |
+| `restart-server.sh <server>` | Рестарт одного сервера: команда в FIFO → ожидание остановки (30 с) → ожидание нового PID → ожидание маркера готовности (Velocity 120 с, Paper 300 с). | `restart.sh`, `scheduled-restart.sh` |
 | `scheduled-restart.sh <stage>` | Один этап ночного рестарта: state-файл, защита от повторного запуска, откат при ошибке, обновление last-good SHA. | `prod-restart@<stage>.service` (systemd) |
 | `rollback-prod.sh` | Откат PROD на SHA из `.last-good-deploy-sha`, рендер секретов, рестарт. Копирует скрипты в `.rollback-scripts.<pid>`, чтобы пережить checkout старого дерева. | `restart.sh`, `scheduled-restart.sh` |
 | `deploy-dev.sh` | Полный dev-деплой: sync → overrides → commit B → secrets → baseline → рестарт → Checker → cleanup. | `deploy_dev.yml` |

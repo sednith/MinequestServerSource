@@ -4,6 +4,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
+if ! declare -F log_reports_ready >/dev/null 2>&1; then
+    log "[ERROR] scripts/common.sh не содержит log_reports_ready; обновите скрипты репозитория целиком"
+    exit 1
+fi
+
 usage() {
     echo "Использование: bash scripts/restart-server.sh <имя-папки-сервера>" >&2
 }
@@ -19,10 +24,17 @@ resolve_server_jar || exit 1
 FIFO="$SERVER_DIR/server_console"
 PID_FILE="$SERVER_DIR/.server.pid"
 LOG_FILE="$SERVER_DIR/logs/latest.log"
-TIMEOUT=120
+TIMEOUT_VELOCITY=120
+TIMEOUT_PAPER=300
 CHECK_INTERVAL=2
 STOP_TIMEOUT=30
 RESTART_WAIT=7
+
+if [[ "$SERVER_KIND" == velocity ]]; then
+    TIMEOUT="$TIMEOUT_VELOCITY"
+else
+    TIMEOUT="$TIMEOUT_PAPER"
+fi
 
 if [[ ! -s "$PID_FILE" ]]; then
     log "[ERROR] PID-файл не найден: $PID_FILE. Запустите сервер через scripts/startserver.sh '$SERVER_NAME'"
@@ -40,10 +52,13 @@ fi
 
 if [[ -f "$LOG_FILE" ]]; then
     LOG_SIZE_BEFORE=$(wc -c < "$LOG_FILE")
+    LOG_SIZE_BEFORE="${LOG_SIZE_BEFORE//[[:space:]]/}"
     LOG_INODE_BEFORE=$(stat -c '%i' -- "$LOG_FILE")
+    LOG_HEAD_BEFORE=$(log_head_fingerprint "$LOG_FILE" "$(log_head_probe_len "$LOG_SIZE_BEFORE")")
 else
     LOG_SIZE_BEFORE=0
     LOG_INODE_BEFORE=""
+    LOG_HEAD_BEFORE=""
 fi
 
 log "[INFO] Перезапуск $SERVER_NAME (PID $OLD_PID)"
@@ -87,14 +102,18 @@ fi
 
 log "[INFO] Новый процесс $SERVER_NAME запущен: PID $NEW_PID (предыдущий: $OLD_PID)"
 if [[ "$SERVER_KIND" == velocity ]]; then
+    BOOT_PATTERN='Booting up Velocity'
     READY_PATTERN='Done \([0-9.]+s\)!'
-    log "[INFO] Ожидание готовности Velocity по сообщению 'Done (...)!' в логе"
+    log "[INFO] Ожидание готовности Velocity по сообщению 'Done (...)!' в логе (таймаут ${TIMEOUT}с)"
 else
+    BOOT_PATTERN='Starting minecraft server version'
     READY_PATTERN='Done.*For help'
-    log "[INFO] Ожидание готовности Paper по сообщению 'Done ... For help' в логе"
+    log "[INFO] Ожидание готовности Paper по сообщению 'Done ... For help' в логе (таймаут ${TIMEOUT}с)"
 fi
 
 ELAPSED=0
+LOG_CHECK_REGION=unknown
+LOG_CHANGE_LOGGED=false
 while (( ELAPSED < TIMEOUT )); do
     if ! server_pid_is_valid "$NEW_PID" "$SERVER_DIR"; then
         log "[ERROR] Процесс $SERVER_NAME завершился до подтверждения готовности"
@@ -102,28 +121,36 @@ while (( ELAPSED < TIMEOUT )); do
         exit 1
     fi
 
+    LOG_CHANGE_DETECTED=false
     if [[ -f "$LOG_FILE" ]]; then
         LOG_SIZE_NOW=$(wc -c < "$LOG_FILE")
+        LOG_SIZE_NOW="${LOG_SIZE_NOW//[[:space:]]/}"
         LOG_INODE_NOW=$(stat -c '%i' -- "$LOG_FILE")
-        if [[ -n "$LOG_INODE_BEFORE" && "$LOG_INODE_NOW" != "$LOG_INODE_BEFORE" ]] \
-            || (( LOG_SIZE_NOW < LOG_SIZE_BEFORE )); then
-            log "[WARN] Обнаружена ротация лога; проверяю файл с начала"
-            LOG_SIZE_BEFORE=0
-            LOG_INODE_BEFORE="$LOG_INODE_NOW"
+        if [[ "$LOG_SIZE_NOW" != "$LOG_SIZE_BEFORE" ]] || [[ "$LOG_INODE_NOW" != "$LOG_INODE_BEFORE" ]]; then
+            LOG_CHANGE_DETECTED=true
         fi
+    fi
 
-        START_BYTE=$((LOG_SIZE_BEFORE + 1))
-        if tail -c "+$START_BYTE" "$LOG_FILE" 2>/dev/null | grep -qE "$READY_PATTERN"; then
-            log "[OK] $SERVER_NAME успешно загружен за ${ELAPSED}с (PID $NEW_PID)"
-            exit 0
-        fi
+    READY_NOW=false
+    if log_reports_ready "$LOG_FILE" "$BOOT_PATTERN" "$READY_PATTERN" "$LOG_SIZE_BEFORE" "$LOG_HEAD_BEFORE"; then
+        READY_NOW=true
+    fi
+
+    if [[ "$LOG_CHANGE_DETECTED" == true && "$LOG_CHANGE_LOGGED" != true ]]; then
+        log "[INFO] Лог $SERVER_NAME изменился: size $LOG_SIZE_BEFORE -> $LOG_SIZE_NOW, inode $LOG_INODE_BEFORE -> $LOG_INODE_NOW; режим проверки: $LOG_CHECK_REGION"
+        LOG_CHANGE_LOGGED=true
+    fi
+
+    if [[ "$READY_NOW" == true ]]; then
+        log "[OK] $SERVER_NAME успешно загружен за ${ELAPSED}с (PID $NEW_PID, режим проверки: $LOG_CHECK_REGION)"
+        exit 0
     fi
 
     sleep "$CHECK_INTERVAL"
     ((ELAPSED += CHECK_INTERVAL))
 done
 
-log "[ERROR] $SERVER_NAME не сообщил о готовности за ${TIMEOUT}с"
+log "[ERROR] $SERVER_NAME не сообщил о готовности за ${TIMEOUT}с (режим проверки: $LOG_CHECK_REGION)"
 log "[INFO] Последние строки лога:"
 [[ -f "$LOG_FILE" ]] && tail -n 20 "$LOG_FILE"
 exit 1
