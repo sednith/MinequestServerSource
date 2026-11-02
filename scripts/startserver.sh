@@ -100,12 +100,28 @@ exec 3<> "$FIFO"
 
 cd "$SERVER_DIR"
 
+LAST_JAR_NAME=""
 while true; do
-    log "[INFO] Запуск $SERVER_NAME: $(basename -- "$SERVER_JAR")"
+    # Деплой мог заменить ядро (переименовать JAR), пока супервизор жив.
+    # Перечитываем каталог на каждой итерации, иначе после stop будет
+    # предпринята попытка запустить уже удалённый файл.
+    if ! resolve_server_jar; then
+        log "[WARN] Не удалось определить JAR ядра в $SERVER_DIR; повтор через ${RESTART_WAIT}с"
+        sleep "$RESTART_WAIT"
+        continue
+    fi
+
+    JAR_NAME="$(basename -- "$SERVER_JAR")"
+    if [[ -n "$LAST_JAR_NAME" && "$JAR_NAME" != "$LAST_JAR_NAME" ]]; then
+        log "[INFO] Ядро $SERVER_NAME изменилось: $LAST_JAR_NAME -> $JAR_NAME"
+    fi
+    LAST_JAR_NAME="$JAR_NAME"
+
+    log "[INFO] Запуск $SERVER_NAME: $JAR_NAME"
     if [[ "$SERVER_KIND" == paper ]]; then
-        java @java-args -jar "$(basename -- "$SERVER_JAR")" --nogui < "$FIFO" &
+        java @java-args -jar "$JAR_NAME" --nogui < "$FIFO" &
     else
-        java @java-args -jar "$(basename -- "$SERVER_JAR")" < "$FIFO" &
+        java @java-args -jar "$JAR_NAME" < "$FIFO" &
     fi
     SERVER_PID=$!
     printf '%s\n' "$SERVER_PID" > "$PID_FILE"

@@ -65,18 +65,52 @@ resolve_server_jar() {
     esac
 }
 
+# Возвращает JAR, с которым процесс реально запущен (аргумент после -jar).
+# Имя берётся из /proc, а не из каталога на диске: при обновлении ядра файл
+# уже переименован, а работающий процесс ещё держит старое имя.
+server_process_jar() {
+    local pid="$1"
+    local -a args=()
+    local i
+
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    mapfile -d '' -t args < "/proc/$pid/cmdline" 2>/dev/null || return 1
+    for ((i = 0; i + 1 < ${#args[@]}; i++)); do
+        if [[ "${args[i]}" == "-jar" ]]; then
+            printf '%s\n' "${args[i + 1]}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# PID считается процессом сервера, если это java с -jar из каталога сервера.
+# Проверка намеренно не зависит от текущего имени JAR на диске, иначе любое
+# обновление ядра делает живой процесс «чужим» для restart/start-all.
 server_pid_is_valid() {
     local pid="$1"
     local expected_dir="$2"
     local actual_dir
-    local cmdline
+    local jar_arg
+    local jar_dir
 
     [[ "$pid" =~ ^[0-9]+$ ]] || return 1
     [[ -r "/proc/$pid/cmdline" ]] || return 1
     actual_dir="$(readlink "/proc/$pid/cwd" 2>/dev/null)" || return 1
     [[ "$actual_dir" == "$expected_dir" ]] || return 1
-    cmdline="$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null )" || return 1
-    [[ "$cmdline" == *"-jar"* && "$cmdline" == *"$(basename -- "$SERVER_JAR")"* ]]
+    jar_arg="$(server_process_jar "$pid")" || return 1
+    [[ "$jar_arg" == *.jar ]] || return 1
+
+    if [[ "$jar_arg" == */* ]]; then
+        if [[ "$jar_arg" == /* ]]; then
+            jar_dir="$(dirname -- "$jar_arg")"
+        else
+            jar_dir="$expected_dir/$(dirname -- "$jar_arg")"
+        fi
+        jar_dir="$(cd -- "$jar_dir" 2>/dev/null && pwd -P)" || return 1
+        [[ "$jar_dir" == "$expected_dir" ]] || return 1
+    fi
+    return 0
 }
 
 server_stop_command() {
