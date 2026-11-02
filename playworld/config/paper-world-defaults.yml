@@ -235,6 +235,7 @@ environment:
   disable-ice-and-snow: false
   disable-thunder: false
   fire-tick-delay: 30
+  fix-missing-tree-snow: false
   frosted-ice:
     delay:
       max: 40
