@@ -1,11 +1,5 @@
 # Minequest Server Source
 
-![Paper](https://img.shields.io/badge/Paper-26.3--226-2b6cb0)
-![Velocity](https://img.shields.io/badge/Velocity-4.3.0--44-6b46c1)
-![Java](https://img.shields.io/badge/Java-25-orange)
-![GitHub Actions](https://img.shields.io/badge/CI-GitHub%20Actions-2088ff)
-![Platform](https://img.shields.io/badge/Deploy-Linux%20%7C%20Screen-333)
-
 Репозиторий-конфигурация Minecraft-сети **Minequest**: в нём живут файлы Paper-серверов (лобби `adjustment` и основной мир `playworld`), конфигурация Velocity-прокси и вся обвязка для деплоя, запуска, перезапуска и отката стендов. Git здесь — это «источник правды»: серверы на проде работают прямо из git-чекаута, а GitHub Actions обновляют этот чекаут и перезапускают процессы. Отдельно есть dev-стенд, который автоматически собирается из ветки `dev`, и prod-стенд, который обновляется только через ручной release-пайплайн по тегам `vX.Y.Z`. Вся чувствительная информация (секреты, локальные порты и лимиты памяти) вынесена из репозитория в локальные `secrets` и `overrides`, а нештатные изменения конфигов ловит Checker.
 
 ---
