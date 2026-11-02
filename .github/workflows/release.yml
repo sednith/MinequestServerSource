@@ -73,8 +73,12 @@ jobs:
                 echo "[ERROR] Обычный релиз заблокирован: сначала влейте main в dev и запушьте dev" >&2
                 exit 1
               fi
-              echo "[INFO] Слияние dev в main для обычного релиза"
-              git merge origin/dev --no-ff -m "release: merge branch 'dev' into 'main' [internal]"
+              echo "[INFO] Слияние dev в main для обычного релиза (fast-forward)"
+              git merge --ff-only origin/dev || {
+                echo "[ERROR] Не удалось выполнить fast-forward origin/dev в main" >&2
+                echo "[ERROR] Проверьте, что origin/main является предком origin/dev" >&2
+                exit 1
+              }
               VERSION_TYPE="$RELEASE_TYPE"
               ;;
             hotfix)
@@ -203,19 +207,39 @@ jobs:
 
             echo "[ЭТАП 3/3] Синхронизация main в dev"
             cd "$DEV_DIR"
-            git fetch origin
+            git fetch origin --tags +refs/heads/main:refs/remotes/origin/main +refs/heads/dev:refs/remotes/origin/dev
+            if ! git rev-parse -q --verify refs/remotes/origin/main >/dev/null; then
+              echo "[ERROR] В $DEV_DIR после git fetch отсутствует refs/remotes/origin/main" >&2
+              echo "[ERROR] dev не синхронизирован: проверьте fetch-refspec клона в $DEV_DIR" >&2
+              exit 1
+            fi
             git checkout -f -B dev origin/dev
+            BEFORE_SHA="$(git rev-parse HEAD)"
             if git merge-base --is-ancestor origin/main HEAD; then
-              echo "[INFO] dev уже содержит все коммиты main"
+              echo "[INFO] Синхронизация не требуется: dev уже содержит все коммиты main"
             else
-              if ! git merge --no-ff --no-edit -m "chore: sync main into dev [internal]" origin/main; then
-                echo "[ERROR] Конфликт при синхронизации main в dev" >&2
-                git merge --abort
-                echo "[WARN] PROD обновлен, dev требует ручного разрешения конфликта" >&2
-                exit 1
+              if git merge-base --is-ancestor HEAD origin/main; then
+                echo "[INFO] dev отстаёт от origin/main; выполняется fast-forward"
+                git merge --ff-only --no-edit origin/main || {
+                  echo "[ERROR] Не удалось выполнить fast-forward origin/main в dev" >&2
+                  echo "[WARN] PROD обновлен, dev не синхронизирован и требует ручной синхронизации" >&2
+                  exit 1
+                }
+              else
+                echo "[INFO] Ветки main и dev разошлись; создаётся merge-коммит синхронизации"
+                if ! git merge --no-ff --no-edit -m "hotfix: sync 'main' into 'dev' [internal]" origin/main; then
+                  echo "[ERROR] Конфликт при синхронизации main в dev" >&2
+                  git merge --abort >/dev/null 2>&1 || git reset --merge >/dev/null 2>&1 || true
+                  echo "[WARN] PROD обновлен, dev требует ручного разрешения конфликта" >&2
+                  exit 1
+                fi
               fi
-              git push origin dev
-              echo "[OK] dev синхронизирован; существующий push-trigger запустит dev deploy"
+              if [ "$BEFORE_SHA" != "$(git rev-parse HEAD)" ]; then
+                git push origin dev
+                echo "[OK] dev синхронизирован; существующий push-trigger запустит dev deploy"
+              else
+                echo "[INFO] Изменений в dev нет; push не требуется"
+              fi
             fi
 
             echo "[OK] Релиз $RELEASE_TAG развернут на PROD"
