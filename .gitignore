@@ -51,3 +51,5 @@ checker-report/
 
 __pycache__/
 .venv/
+
+bot_test_file_deleted_next_commit
