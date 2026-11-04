@@ -212,7 +212,7 @@ EOF
    - `hotfix`: валидирует имя ветки, запрещает `main` и `dev` как источник, делает `git merge origin/<hotfix_branch> --no-ff`.
    - Берёт последний тег `vX.Y.Z`, доступный из `main`, и инкрементирует версию по `release_type` (для хотфикса — patch).
    - Проверяет, что такого тега ещё нет (локально и на origin), иначе аварийно выходит **до** пуша.
-   - Собирает changelog из `git log LATEST_TAG..HEAD`, выбрасывая коммиты с меткой `[internal]`. Если ничего не осталось — пишет «Мелкие правки и улучшения».
+   - Собирает changelog из `git log LATEST_TAG..HEAD` с `--no-merges` (merge-коммиты в changelog не попадают), выбрасывая коммиты с метками `[internal]` и `[no-changelog]` (поиск по всему сообщению, без учёта регистра). Если ничего не осталось — пишет «Мелкие правки и улучшения».
    - Создаёт annotated-тег `vX.Y.Z` с changelog в сообщении и делает **атомарный** `push origin main refs/tags/vX.Y.Z`.
 2. **Деплой PROD** (SSH-шаг):
    - **Этап 1/3:** `git fetch origin --tags`, `git checkout -f -B main <origin/main>`, `git reset --hard`. Код на PROD обновлён.
@@ -655,7 +655,11 @@ git switch -c feature/<короткое-имя>
 - **Не коммитьте** `secrets`, `overrides/`, `checker-report/`, логи, `.server.pid`, миры, `ops.json`, whitelist/banlist.
 - Если значение нужно только dev — используйте `overrides/`, а не коммит.
 - Если нужен секрет — плейсхолдер `${NAME}` + запись в манифесте.
-- Коммиты, которые не должны попасть в changelog релиза, помечайте `[internal]` в заголовке.
+- Коммиты, которые не должны попасть в changelog релиза, помечайте меткой в заголовке:
+  - `[no-changelog]` — коммит полезен репозиторию, но игроку сообщать не о чем (тесты, проверки, служебные правки). Пример: `git commit -m "test: проверка графа веток [no-changelog]"`;
+  - `[internal]` — служебные коммиты пайплайна (merge/sync релизной машинерии), в changelog не попадают никогда.
+
+  Merge-коммиты в changelog не попадают автоматически (`--no-merges`) — помечать их не нужно. Метки ищутся по всему сообщению коммита без учёта регистра.
 
 ```bash
 git add playworld/config/paper-global.yml

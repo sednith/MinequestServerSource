@@ -126,7 +126,9 @@ jobs:
             exit 1
           fi
 
-          CHANGELOG="$(git log "$LATEST_TAG"..HEAD --oneline --pretty=format:'- %s' | grep -v '\[internal\]' || true)"
+          CHANGELOG="$(git log "$LATEST_TAG"..HEAD --no-merges \
+            --invert-grep -i --grep='\[internal\]' --grep='\[no-changelog\]' \
+            --pretty=format:'- %s' || true)"
           if [[ -z "$CHANGELOG" ]]; then
             CHANGELOG='- Мелкие правки и улучшения'
           fi
