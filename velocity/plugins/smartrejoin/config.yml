@@ -1,0 +1,217 @@
+# --------------------------------------------------- #
+#               SmartRejoin Configuration            #
+# --------------------------------------------------- #
+
+# --- General Settings ---
+settings:
+  # If true, the plugin will print informational and warning messages to the console.
+  # Critical errors will always be logged regardless of this setting.
+  logging_enabled: true
+
+# --- Storage Configuration ---
+# This section defines how player data is stored.
+# SQLite is recommended for large servers with many players.
+storage:
+  # The type of storage backend to use.
+  # - 'yaml': Uses data.yml file. Simple, but may have performance issues with many players.
+  # - 'sqlite': Uses SQLite database. Recommended for large servers. Handles millions of players efficiently.
+  type: "sqlite"
+
+# --- Fallback Configuration ---
+# This section defines what happens if the plugin cannot find a valid server
+# for a player according to the rules below.
+# This can happen if the target server is offline or full.
+fallback:
+  # If 'enabled', this plugin's fallback logic will be used.
+  # When disabled, Velocity's try list supplies fallback servers.
+  enabled: false
+
+  # Defines the type of fallback to perform.
+  # - 'RANDOM': Connects the player to a random server whose name CONTAINS the 'name' value.
+  # - 'SERVER': Connects the player to a specific server with an exact 'name'.
+  type: SERVER
+
+  # The server name or part of the name to look for.
+  # For example, if type is 'RANDOM' and name is 'lobby', it will find any online server
+  # like 'lobby-1', 'lobby-2', etc., and pick one at random.
+  name: "adjustment"
+
+# --- Default Rule ---
+# This rule is applied if a player's last server doesn't match any of the specific rules below.
+default:
+  # Defines the action to take.
+  # - 'SAME': Connects the player back to the exact same server they disconnected from.
+  #           Attempts offline servers too, allowing AutoServer to start them.
+  # - 'FALLBACK': Immediately uses the fallback rule defined above.
+  # - 'SMART': A more advanced option. It tries to find a related lobby server.
+  #            It takes the player's last server name, removes common suffixes like numbers
+  #            (e.g., 'bedwars_123' becomes 'bedwars'), and then uses the 'arguments'
+  #            to find a new server.
+  rule: SAME
+
+  # Arguments for the 'SMART' rule. Not used for 'SAME' or 'FALLBACK'.
+  # The first argument is a strategy: MOST, LEAST, RANDOM (substring pool),
+  # or EQUALS, SAME, SERVER (case-insensitive exact destination).
+  # The second argument is the name pattern, where '%last_seen%' is a placeholder
+  # for the cleaned-up server name from the player's last session.
+  #
+  # Example: If a player was on 'anarchy_5', %last_seen% becomes 'anarchy'.
+  # The plugin would then look for the server with the MOST players whose name contains 'anarchy_lobby'.
+  # arguments: ['MOST', '%last_seen%_lobby']
+  arguments: []
+
+# --- Custom Rules ---
+# Define specific redirection rules here. They are checked in the order they appear.
+# The first rule that matches the player's last server will be used.
+# Rule names must be unique. They are for your reference.
+# 'last_seen' defines the condition for this rule to trigger.
+    # Match type:
+    # - 'EQUALS': The player's last server name must be an exact match.
+    # - 'CONTAINS': The player's last server name must contain this string.
+# 'where_to_join' defines where to send the player if the 'last_seen' condition is met.
+    # Target selection strategy:
+    # - 'EQUALS': Connect to a server with this exact name.
+    # - 'MOST': Find all online servers whose names CONTAIN the 'name' string and have at least one slot. Then, connect to the one with the MOST players.
+    # - 'LEAST': Same as 'MOST', but connects to the one with the LEAST players.
+    # - 'RANDOM': Same as 'MOST', but connects to a RANDOM one.
+# Examples are listed below:
+rules:
+#  stay_on_survival:
+#    last_seen:
+#      type: EQUALS
+#      name: "survival"
+#    where_to_join:
+#      type: EQUALS
+#      name: "survival"
+#
+#  bedwars_lobby_fallback:
+#    last_seen:
+#      type: CONTAINS
+#      name: "bedwars"
+#    where_to_join:
+#      type: MOST
+#      name: "bedwars_lobby"
+
+# --- Modded Routing Configuration ---
+# This feature allows you to route players with specific Minecraft loaders (e.g., Forge, Fabric)
+# to a specific backend server with highest priority, bypassing all other routing rules.
+modded_routing:
+  # Enable or disable the modded routing feature.
+  # Current matching uses protocol version only; loader_type is not enforced.
+  # If they match, the player will be sent directly to the target_server, ignoring all other rules.
+  # Default: false
+  enabled: false
+
+  # The name of the backend server to connect modded players to.
+  # This server must exist in your Velocity configuration.
+  # Default: "modded_server"
+  target_server: "modded_server"
+
+  # The type of Minecraft loader to match.
+  # Common values: "forge", "fabric", "neoforge", "quilt"
+  # Reserved for future loader detection; currently not enforced.
+  # Default: "forge"
+  loader_type: "forge"
+
+  # The Minecraft version to match.
+  # This is checked against the player's protocol version.
+  # Format should be "major.minor.patch" e.g., "1.20.1", "1.19.4"
+  # Default: "1.20.1"
+  minecraft_version: "1.20.1"
+
+# --- Rejoin Queue Configuration ---
+# This feature monitors backend servers and automatically queues players for rejoin
+# when their server goes down, then sends them back when it comes back up.
+rejoin_queue:
+  # Enable or disable the rejoin queue feature.
+  # When enabled, failed exact connections retain their destination on fallback.
+  enabled: true
+
+  # How often (in ticks) to ping each monitored backend server to check availability.
+  # 20 ticks = 1 second. Default: 100 (5 seconds).
+  monitor_interval: 100
+
+  # Delay (in ticks) before sending the first player after a server comes back up.
+  # Set to 0 for no initial delay. Default: 60 (3 seconds).
+  rejoin_initial_delay: 60
+
+  # Delay (in ticks) between sending each subsequent player from the queue.
+  # Minimum effective delay is 1 tick. Default: 10 (0.5 seconds).
+  rejoin_cooldown: 10
+
+  # Maximum time to retry a starting fallback, in ticks (20 = 1 second).
+  # 0 means one attempt. Requires a fallback server registered in Velocity.
+  fallback_wait_timeout: 200
+
+  # Whitelist configuration for which servers to monitor.
+  whitelist:
+    # Match type for server filtering:
+    # - 'EQUALS': Only monitor servers whose names exactly match entries in the list.
+    # - 'CONTAINS': Monitor servers whose names contain any entry in the list.
+    # - 'ALL': Monitor all backend servers (the list is ignored).
+    type: EQUALS
+
+    # List of server names to monitor (used only when type is EQUALS or CONTAINS).
+    list:
+      - "playworld"
+
+  # Maximum time (in ticks) to wait for a server to come back up before discarding the queue.
+  # Players will stay on their fallback server - no kick, no message.
+  # Set to 0 to disable. Default: 72000 (~30 minutes).
+  wait_timeout: 72000
+
+  # Actionbar message configuration for queued players.
+  actionbar:
+    enabled: true
+    # MiniMessage format. Placeholders: {server}, {position}, {total}
+    format: "<white>Ожидание подключения — {position} из {total}</white> <gray>({server})</gray>"
+
+  # Leave-queue command configuration.
+  leave_command:
+    enabled: false
+    command: "leavequeue"
+    # MiniMessage format. Placeholder: {server}
+    message_left: "<green>You have left the queue for <bold>{server}</bold>.</green>"
+    # MiniMessage format. No placeholders applicable.
+    message_not_in_queue: "<red>You are not currently in any queue.</red>"
+
+  # Debug mode for troubleshooting rejoin queue issues.
+  # When enabled, detailed logs will be printed for queue operations.
+  debug: false
+
+# --- Seamless Reconnect (Minecraft 1.20.3–26.3; protocols 765–777) ---
+# Alternative to fallback for players ALREADY in a backend when it goes offline.
+# Retains their loaded chunks/entities, freezes client world ticks, locks movement
+# and interactions, and returns them when the backend responds again.
+# Older/unsupported clients and players joining while the backend is down use
+# normal routing/fallback; frozen worlds are never restored after logout.
+seamless_reconnect:
+  # Enabled for fresh installs. Existing configs missing this setting receive false.
+  enabled: true
+  # Select backends eligible for seamless reconnect. Independent of rejoin_queue's
+  # whitelist. ALL preserves the original behavior; EQUALS selects exact names
+  # (ignoring case); CONTAINS selects case-sensitive substrings. An empty list
+  # with EQUALS/CONTAINS selects no backends. Other backends use normal fallback.
+  whitelist:
+    type: EQUALS
+    # To enable only selected backends, set type: EQUALS and edit this list.
+    list: [playworld]
+  # MiniMessage actionbar, refreshed every second for the entire outage.
+  actionbar: "Ожидайте перезагрузки сервера или напишите /leave для выхода в лобби"
+  # Grace period after failure before checking recovery (ticks; minimum 20).
+  # A stopping backend may still answer pings. Recovery also requires two
+  # consecutive successful pings, checked once per second.
+  recovery_grace: 40
+  # Extra ticks to wait after stable recovery before reconnecting. 20 = 1 second.
+  rejoin_delay: 20
+  # Abrupt disconnects/timeouts trigger freezing automatically. Explicit kick
+  # packets trigger it ONLY if their text contains one of these phrases (ignoring
+  # case), so ordinary kicks/bans retain their normal behavior. [] disables this.
+  restart_kick_messages:
+    - "server closed"
+    - "restarting"
+    - "server is stopping"
+    - "multiplayer.disconnect.server_shutdown"
+# /leave works while frozen and connects to the configured fallback, or Velocity's
+# try list if fallback is disabled. If the lobby is unavailable, the player stays
+# frozen and can retry /leave. Seamless waiting has no queue timeout.
