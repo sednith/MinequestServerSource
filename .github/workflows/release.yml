@@ -36,14 +36,17 @@ concurrency:
 
 env:
   PROD_DIR: /home/server/prod
-  DEV_DIR: /home/server/dev
   PROD_LAST_GOOD_SHA_FILE: /home/server/prod/.last-good-deploy-sha
 
 jobs:
-  release-and-deploy:
-    name: Create version and deploy PROD
+  # Публикация отделена от деплоя: если деплой PROD упадёт, его можно
+  # перезапустить иконкой "Re-run" у этого job'а, не повторяя слияние и тег.
+  publish:
+    name: Create version and tag
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -62,23 +65,27 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Рабочее дерево не используется вообще: merge-коммит собирается
+          # через plumbing (merge-tree + commit-tree). Так релиз не зависит от
+          # CRLF/EOL-состояния файлов в рабочей копии раннера.
           git fetch origin --tags
           git fetch origin main dev
-          git checkout -B main origin/main
 
+          MERGE_TREE_HELP="$(git merge-tree -h 2>&1 || true)"
+          if [[ "$MERGE_TREE_HELP" != *"--write-tree"* ]]; then
+            echo "[ERROR] Нужен git >= 2.38 (merge-tree --write-tree), на раннере: $(git --version)" >&2
+            exit 1
+          fi
+
+          # 1. Валидация режима и выбор источника слияния.
           case "$RELEASE_MODE" in
             release)
               if ! git merge-base --is-ancestor origin/main origin/dev; then
-                echo "[ERROR] В origin/main есть коммиты, отсутствующие в origin/dev (например, после неудачного хотфикса)" >&2
+                echo "[ERROR] В origin/main есть коммиты, отсутствующие в origin/dev (например, после релиза, когда job sync-dev не отработал)" >&2
                 echo "[ERROR] Обычный релиз заблокирован: сначала влейте main в dev и запушьте dev" >&2
                 exit 1
               fi
-              echo "[INFO] Слияние dev в main для обычного релиза (fast-forward)"
-              git merge --ff-only origin/dev || {
-                echo "[ERROR] Не удалось выполнить fast-forward origin/dev в main" >&2
-                echo "[ERROR] Проверьте, что origin/main является предком origin/dev" >&2
-                exit 1
-              }
+              SOURCE_REF=origin/dev
               VERSION_TYPE="$RELEASE_TYPE"
               ;;
             hotfix)
@@ -91,8 +98,7 @@ jobs:
                 exit 2
               fi
               git fetch origin "refs/heads/$HOTFIX_BRANCH:refs/remotes/origin/$HOTFIX_BRANCH"
-              echo "[INFO] Слияние origin/$HOTFIX_BRANCH в main для хотфикса"
-              git merge "origin/$HOTFIX_BRANCH" --no-ff -m "hotfix: merge branch '$HOTFIX_BRANCH' into 'main' [internal]"
+              SOURCE_REF="origin/$HOTFIX_BRANCH"
               VERSION_TYPE=patch
               ;;
             *)
@@ -101,9 +107,10 @@ jobs:
               ;;
           esac
 
-          # Version numbers belong to the main line: tags parked on unmerged
-          # branches must not shift the release line, but they still block the
-          # number they occupy (see the collision check below).
+          # 2. Версия. Считается до слияния, потому что нужна в сообщении
+          #    merge-коммита. Номера версий принадлежат линии main: теги на
+          #    невлитых ветках не сдвигают релизную линию, но занимают номер
+          #    (см. проверку коллизии ниже).
           LATEST_TAG="$(git tag --list 'v[0-9]*' --merged origin/main | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
           if [[ -z "$LATEST_TAG" ]]; then
             LATEST_TAG=v1.0.0
@@ -126,21 +133,59 @@ jobs:
             exit 1
           fi
 
-          CHANGELOG="$(git log "$LATEST_TAG"..HEAD --oneline --pretty=format:'- %s' | grep -v '\[internal\]' || true)"
+          # 3. Релиз без новых коммитов выпускать не из чего: merge-коммит
+          #    получился бы пустым, а тег лёг бы на предыдущий релиз. Падаем
+          #    до пуша, поэтому номер версии не расходуется.
+          if git merge-base --is-ancestor "$SOURCE_REF" origin/main; then
+            echo "[ERROR] $SOURCE_REF не содержит новых коммитов относительно main" >&2
+            echo "[ERROR] Выпускать новую версию не из чего: main, тег и PROD не изменены" >&2
+            exit 1
+          fi
+
+          # 4. Merge-коммит релиза (plumbing, без checkout и без рабочего дерева).
+          RELEASE_MSG="release: $NEW_TAG"
+          if [[ "$RELEASE_MODE" == hotfix ]]; then
+            RELEASE_MSG+=" (hotfix: $HOTFIX_BRANCH)"
+          fi
+          echo "[INFO] Создание merge-коммита '$RELEASE_MSG'"
+          if ! MERGE_TREE="$(git merge-tree --write-tree origin/main "$SOURCE_REF")"; then
+            echo "[ERROR] Конфликт при слиянии $SOURCE_REF в main" >&2
+            echo "$MERGE_TREE" >&2
+            echo "[ERROR] Публикация отменена" >&2
+            exit 1
+          fi
+          NEW_COMMIT="$(git commit-tree "$MERGE_TREE" -p origin/main -p "$SOURCE_REF" -m "$RELEASE_MSG")"
+          if [ "$(git rev-list --parents -n 1 "$NEW_COMMIT" | wc -w)" -ne 3 ]; then
+            echo "[ERROR] Получился не merge-коммит; публикация отменена" >&2
+            exit 1
+          fi
+          echo "[INFO] Merge-коммит: $NEW_COMMIT"
+
+          # 5. Changelog, тег, атомарный push.
+          #    --no-merges исключает и сам релизный merge-коммит, и sync-коммиты.
+          CHANGELOG="$(git log "$LATEST_TAG".."$NEW_COMMIT" --no-merges \
+            --invert-grep -i --grep='\[internal\]' --grep='\[no-changelog\]' \
+            --pretty=format:'- %s' || true)"
           if [[ -z "$CHANGELOG" ]]; then
             CHANGELOG='- Мелкие правки и улучшения'
           fi
-          git tag -a "$NEW_TAG" -m "Release $NEW_TAG ($VERSION_TYPE)" -m "$CHANGELOG"
+          git tag -a "$NEW_TAG" "$NEW_COMMIT" -m "Release $NEW_TAG ($VERSION_TYPE)" -m "$CHANGELOG"
 
           echo "[INFO] Публикация main и тега $NEW_TAG"
-          git push --atomic origin main "refs/tags/$NEW_TAG"
+          git push --atomic origin "$NEW_COMMIT:refs/heads/main" "refs/tags/$NEW_TAG"
           echo "release_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
           echo "[OK] Создан релиз $NEW_TAG"
 
-      - name: Deploy PROD, optionally restart, and sync DEV
+  deploy:
+    name: Deploy PROD
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Deploy PROD and optionally restart
         uses: appleboy/ssh-action@v1.0.0
         env:
-          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          RELEASE_TAG: ${{ needs.publish.outputs.release_tag }}
           RESTART_PROD: ${{ inputs.release_mode == 'hotfix' && inputs.restart_prod }}
         with:
           host: ${{ secrets.REMOTE_HOST }}
@@ -148,22 +193,23 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.REMOTE_PORT }}
           command_timeout: 20m
-          envs: RELEASE_TAG,RESTART_PROD,PROD_DIR,DEV_DIR,PROD_LAST_GOOD_SHA_FILE
+          envs: RELEASE_TAG,RESTART_PROD,PROD_DIR,PROD_LAST_GOOD_SHA_FILE
           script: |
             set -euo pipefail
 
-            if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            if [[ -n "$RELEASE_TAG" && ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "[ERROR] Некорректный тег релиза: $RELEASE_TAG" >&2
               exit 2
             fi
-            for directory in "$PROD_DIR" "$DEV_DIR"; do
-              if [ ! -d "$directory" ]; then
-                echo "[ERROR] Каталог не существует: $directory" >&2
-                exit 1
-              fi
-            done
+            if [[ -z "$RELEASE_TAG" ]]; then
+              echo "[WARN] Тег не передан (повторный запуск job'а); разворачиваю текущий origin/main"
+            fi
+            if [ ! -d "$PROD_DIR" ]; then
+              echo "[ERROR] Каталог не существует: $PROD_DIR" >&2
+              exit 1
+            fi
 
-            echo "[ЭТАП 1/3] Обновление PROD до актуального origin/main (релиз $RELEASE_TAG)"
+            echo "[ЭТАП 1/2] Обновление PROD до актуального origin/main (релиз ${RELEASE_TAG:-без тега})"
             cd "$PROD_DIR"
             git fetch origin --tags +refs/heads/main:refs/remotes/origin/main
             TARGET_SHA="$(git rev-parse refs/remotes/origin/main)"
@@ -188,7 +234,7 @@ jobs:
             git reset --hard "$TARGET_SHA"
 
             if [ "$RESTART_PROD" = "true" ]; then
-              echo "[ЭТАП 2/3] Рестарт PROD и проверка готовности"
+              echo "[ЭТАП 2/2] Рестарт PROD и проверка готовности"
               if bash ./scripts/restart.sh prod; then
                 printf '%s\n' "$TARGET_SHA" > "${PROD_LAST_GOOD_SHA_FILE}.tmp"
                 mv "${PROD_LAST_GOOD_SHA_FILE}.tmp" "$PROD_LAST_GOOD_SHA_FILE"
@@ -197,49 +243,72 @@ jobs:
                 RESTART_EXIT_CODE=$?
                 echo "[ERROR] Новая версия PROD не прошла проверку" >&2
                 echo "[ERROR] restart.sh откатил PROD на последнюю успешную версию $LAST_GOOD_SHA (подробности отката — в логе выше)" >&2
-                echo "[ERROR] Релиз $RELEASE_TAG считается неуспешным: main и тег $RELEASE_TAG остаются, dev не синхронизирован" >&2
-                echo "[WARN] Чтобы разблокировать обычный релиз, влейте main в dev и запушьте dev" >&2
+                echo "[ERROR] Релиз ${RELEASE_TAG:-без тега} считается неуспешным: main и тег остаются опубликованными" >&2
+                echo "[WARN] job sync-dev всё равно синхронизирует main в dev" >&2
                 exit "$RESTART_EXIT_CODE"
               fi
             else
-              echo "[ЭТАП 2/3] Рестарт PROD не запрошен; работающие процессы не перезапускаются"
+              echo "[ЭТАП 2/2] Рестарт PROD не запрошен; работающие процессы не перезапускаются"
             fi
 
-            echo "[ЭТАП 3/3] Синхронизация main в dev"
-            cd "$DEV_DIR"
-            git fetch origin --tags +refs/heads/main:refs/remotes/origin/main +refs/heads/dev:refs/remotes/origin/dev
-            if ! git rev-parse -q --verify refs/remotes/origin/main >/dev/null; then
-              echo "[ERROR] В $DEV_DIR после git fetch отсутствует refs/remotes/origin/main" >&2
-              echo "[ERROR] dev не синхронизирован: проверьте fetch-refspec клона в $DEV_DIR" >&2
+            echo "[OK] PROD развернут на $TARGET_SHA (${RELEASE_TAG:-без тега, повторный запуск})"
+
+  # Синхронизация идёт отдельным job'ом и выполняется даже при упавшем деплое,
+  # чтобы инвариант "main ⊆ dev" восстанавливался без ручных действий.
+  sync-dev:
+    name: Sync main into dev
+    needs: [publish, deploy]
+    if: ${{ always() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          fetch-depth: 0
+
+      - name: Merge main into dev
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin --tags +refs/heads/main:refs/remotes/origin/main +refs/heads/dev:refs/remotes/origin/dev
+
+          if ! git rev-parse -q --verify refs/remotes/origin/main >/dev/null; then
+            echo "[ERROR] После git fetch отсутствует refs/remotes/origin/main" >&2
+            exit 1
+          fi
+
+          MAIN_REF=refs/remotes/origin/main
+          DEV_REF=refs/remotes/origin/dev
+
+          if ! git rev-parse -q --verify "$MAIN_REF" >/dev/null; then
+            echo "[ERROR] После git fetch отсутствует $MAIN_REF" >&2
+            exit 1
+          fi
+
+          # Рабочее дерево не трогаем: и fast-forward, и sync-merge уходят
+          # в origin/dev без checkout (иначе CRLF/EOL-файлы ломают merge).
+          if git merge-base --is-ancestor "$MAIN_REF" "$DEV_REF"; then
+            echo "[INFO] Синхронизация не требуется: dev уже содержит все коммиты main"
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "$DEV_REF" "$MAIN_REF"; then
+            echo "[INFO] dev отстаёт от origin/main; выполняется fast-forward"
+            git push origin "$MAIN_REF:refs/heads/dev"
+          else
+            echo "[INFO] Ветки main и dev разошлись; создаётся merge-коммит синхронизации"
+            if ! MERGE_TREE="$(git merge-tree --write-tree "$DEV_REF" "$MAIN_REF")"; then
+              echo "[ERROR] Конфликт при синхронизации main в dev" >&2
+              echo "$MERGE_TREE" >&2
+              echo "[WARN] dev требует ручного разрешения конфликта" >&2
               exit 1
             fi
-            git checkout -f -B dev origin/dev
-            BEFORE_SHA="$(git rev-parse HEAD)"
-            if git merge-base --is-ancestor origin/main HEAD; then
-              echo "[INFO] Синхронизация не требуется: dev уже содержит все коммиты main"
-            else
-              if git merge-base --is-ancestor HEAD origin/main; then
-                echo "[INFO] dev отстаёт от origin/main; выполняется fast-forward"
-                git merge --ff-only --no-edit origin/main || {
-                  echo "[ERROR] Не удалось выполнить fast-forward origin/main в dev" >&2
-                  echo "[WARN] PROD обновлен, dev не синхронизирован и требует ручной синхронизации" >&2
-                  exit 1
-                }
-              else
-                echo "[INFO] Ветки main и dev разошлись; создаётся merge-коммит синхронизации"
-                if ! git merge --no-ff --no-edit -m "hotfix: sync 'main' into 'dev' [internal]" origin/main; then
-                  echo "[ERROR] Конфликт при синхронизации main в dev" >&2
-                  git merge --abort >/dev/null 2>&1 || git reset --merge >/dev/null 2>&1 || true
-                  echo "[WARN] PROD обновлен, dev требует ручного разрешения конфликта" >&2
-                  exit 1
-                fi
-              fi
-              if [ "$BEFORE_SHA" != "$(git rev-parse HEAD)" ]; then
-                git push origin dev
-                echo "[OK] dev синхронизирован; существующий push-trigger запустит dev deploy"
-              else
-                echo "[INFO] Изменений в dev нет; push не требуется"
-              fi
-            fi
+            SYNC_COMMIT="$(git commit-tree "$MERGE_TREE" -p "$DEV_REF" -p "$MAIN_REF" -m "sync: merge 'main' into 'dev' [internal]")"
+            git push origin "$SYNC_COMMIT:refs/heads/dev"
+          fi
 
-            echo "[OK] Релиз $RELEASE_TAG развернут на PROD"
+          echo "[OK] dev синхронизирован; push-trigger запустит deploy_dev.yml"
