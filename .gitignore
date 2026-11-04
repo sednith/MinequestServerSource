@@ -30,6 +30,7 @@ checker-report/
 /.last-good-deploy-sha.tmp
 /.scheduled-prod-restart-state
 /.scheduled-prod-restart-state.tmp
+
 # WORLD
 **/world/*
 !**/world/dimensions/
@@ -52,4 +53,10 @@ checker-report/
 __pycache__/
 .venv/
 
-bot_test_file_deleted_next_commit
+# PLUGINS
+#SmartRejoin
+/velocity/plugins/smartrejoin/data.yml
+/velocity/plugins/smartrejoin/data.yml.migrated
+/velocity/plugins/smartrejoin/player_data.db
+/velocity/plugins/smartrejoin/player_data.db-shm
+/velocity/plugins/smartrejoin/player_data.db-wal
