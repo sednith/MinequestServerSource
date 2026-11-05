@@ -1,5 +1,10 @@
-name: Release and Deploy PROD
-run-name: Release ${{ inputs.release_mode }} to PROD
+name: Release PROD
+run-name: >-
+  PROD deploy — ${{
+    inputs.release_mode == 'hotfix'
+      && format('hotfix from {0}', inputs.hotfix_branch || 'branch')
+      || format('regular release ({0})', inputs.release_type)
+  }}
 
 on:
   workflow_dispatch:
@@ -177,7 +182,11 @@ jobs:
           echo "[OK] Создан релиз $NEW_TAG"
 
   deploy:
-    name: Deploy PROD
+    name: >-
+      Deploy PROD${{
+        needs.publish.outputs.release_tag != ''
+          && format(' — {0}', needs.publish.outputs.release_tag) || ''
+      }}
     needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 30

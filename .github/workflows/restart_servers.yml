@@ -1,5 +1,5 @@
-name: Restart Minecraft Servers
-run-name: Restart Minecraft Servers — ${{ inputs.environment }}
+name: Restart Servers
+run-name: Restart Servers — ${{ inputs.environment }}
 
 on:
   workflow_dispatch:

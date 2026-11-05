@@ -164,11 +164,13 @@ EOF
 
 ---
 
-### 1. `deploy_dev.yml` — Deploy Dev Environment
+### 1. `deploy_dev.yml` — Deploy DEV
 
 **Что это.** Автоматический деплой dev-стенда при каждом пуше в ветку `dev`.
 
 **Когда запускается.** `push` в `dev` (обычный коммит, merge, синк из `main` — всё равно).
+
+**Как выглядит запуск.** Имя прогона в списке Actions — `DEV deploy — <тема коммита>`, так что по заголовку сразу видно, что именно уехало на стенд. Если тема коммита длинная, GitHub обрезает её при отображении; многострочные сообщения (merge-коммиты) дают рваный заголовок.
 
 **Что делает.**
 
@@ -180,7 +182,7 @@ EOF
    - **STAGE 3/4 — Checker.** Проверка, что после запуска серверы не изменили ничего неожиданного (см. [.checkerignore](#checkerignore)).
    - **STAGE 4/4 — Cleanup.** Удаление временного коммита B и baseline-снапшота; при падении Checker'а печатаются отчёты.
 
-**Как пользоваться.** Ничего не нажимать. Влили фичу в `dev` и запушили — пайплайн поехал. Смотреть: вкладка **Actions → Deploy Dev Environment**.
+**Как пользоваться.** Ничего не нажимать. Влили фичу в `dev` и запушили — пайплайн поехал. Смотреть: вкладка **Actions → Deploy DEV**.
 
 **Особенности.**
 
@@ -190,11 +192,13 @@ EOF
 
 ---
 
-### 2. `release.yml` — Release and Deploy PROD
+### 2. `release.yml` — Release PROD
 
 **Что это.** Ручной релизный пайплайн: merge `dev` в `main` (обычный релиз) или merge хотфикс-ветки, создание тега версии и раскатка на PROD. Каждый релиз оставляет на `main` отдельный merge-коммит `release: vX.Y.Z`. Умеет два режима — обычный релиз и хотфикс.
 
-**Когда запускается.** Только вручную: **Actions → Release and Deploy PROD → Run workflow**.
+**Когда запускается.** Только вручную: **Actions → Release PROD → Run workflow**.
+
+**Как выглядит запуск.** Имя прогона собирается из входных параметров: `PROD deploy — regular release (patch)` для обычного релиза и `PROD deploy — hotfix from <ветка>` для хотфикса (если ветка не указана — `hotfix from branch`). Версии в заголовке нет: тег вычисляется уже внутри job'а `publish`, а `run-name` фиксируется в момент запуска, когда тега ещё не существует. Поэтому версия показывается в имени job'а — `Deploy PROD — vX.Y.Z`.
 
 **Входные параметры.**
 
@@ -216,7 +220,7 @@ EOF
    - Создаёт merge-коммит `release: vX.Y.Z` (для хотфикса — `release: vX.Y.Z (hotfix: <ветка>)`) через `git merge-tree --write-tree` + `git commit-tree`, то есть **без checkout и без рабочего дерева**: релиз не зависит от CRLF/EOL-состояния файлов в копии раннера.
    - Собирает changelog из `git log LATEST_TAG..<merge-commit>` с `--no-merges` (merge-коммиты в changelog не попадают), выбрасывая коммиты с метками `[internal]` и `[no-changelog]` (поиск по всему сообщению, без учёта регистра). Если ничего не осталось — пишет «Мелкие правки и улучшения».
    - Создаёт annotated-тег `vX.Y.Z` на merge-коммите с changelog в сообщении и делает **атомарный** `push origin <sha>:main refs/tags/vX.Y.Z`.
-2. **`Deploy PROD`** (job `deploy`, SSH-шаг, `needs: publish`):
+2. **`Deploy PROD`** (job `deploy`, SSH-шаг, `needs: publish`). В UI job называется `Deploy PROD — vX.Y.Z`: версия берётся из output'а `publish`. При перезапуске одного этого job'а тег в контексте отсутствует, поэтому он называется просто `Deploy PROD`.
    - **Этап 1/2:** `git fetch origin --tags`, `git checkout -f -B main <origin/main>`, `git reset --hard`. Код на PROD обновлён.
    - **Этап 2/2 (только при `release_mode=hotfix` и `restart_prod=true`):** проверяет файл `.last-good-deploy-sha`, запускает `restart.sh prod`. При успехе записывает новый SHA как «последний успешный». При неудаче `restart.sh` сам откатывает PROD на last-good, а job падает.
    - Job не делает ни слияния, ни тега: поэтому при падении его можно **перезапустить отдельно** (иконка ⟳ у job'а в UI Actions или `gh run rerun --job <id>`), и на сервер просто заново доедет текущий `origin/main`. Тег из job'а `publish` необязателен — при повторном запуске в логе будет `[WARN] Тег не передан`.
@@ -224,7 +228,7 @@ EOF
 4. **Финальный лог:** `[OK] PROD развернут на <sha> (vX.Y.Z)`.
 
 > [!IMPORTANT]
-> Обычный релиз (`release`) **не перезапускает серверы**. Он только обновляет рабочий каталог. Новый код реально стартует либо на ночном рестарте, либо при ручном запуске `Restart Minecraft Servers`. Это сделано специально: релиз можно готовить днём, а применение — ночью. Параметр `restart_prod` в режиме `release` игнорируется: рестарт и запись `.last-good-deploy-sha` выполняются только при `release_mode=hotfix` с `restart_prod=true`.
+> Обычный релиз (`release`) **не перезапускает серверы**. Он только обновляет рабочий каталог. Новый код реально стартует либо на ночном рестарте, либо при ручном запуске `Restart Servers`. Это сделано специально: релиз можно готовить днём, а применение — ночью. Параметр `restart_prod` в режиме `release` игнорируется: рестарт и запись `.last-good-deploy-sha` выполняются только при `release_mode=hotfix` с `restart_prod=true`.
 
 > [!NOTE]
 > **Про CRLF.** Если `git status` постоянно показывает файл изменённым с предупреждением «CRLF will be replaced by LF the next time Git touches it», значит файл закоммичен с CRLF, а `.gitattributes` требует `eol=lf` (`*.yml`, `*.sh`, `*.service`, `*.timer`). Лечится `git add --renormalize <файл>` + коммит. На релиз это больше не влияет: merge-коммит собирается через plumbing, без записи в рабочее дерево.
@@ -248,11 +252,11 @@ EOF
 
 ---
 
-### 3. `restart_servers.yml` — Restart Minecraft Servers
+### 3. `restart_servers.yml` — Restart Servers
 
 **Что это.** Ручной рестарт выбранного стенда без обновления кода.
 
-**Когда запускается.** Вручную: **Actions → Restart Minecraft Servers → Run workflow**, параметр `environment` = `dev` | `prod`.
+**Когда запускается.** Вручную: **Actions → Restart Servers → Run workflow**, параметр `environment` = `dev` | `prod`.
 
 **Что делает.** Заходит в `/home/server/<env>` и запускает `bash ./scripts/restart.sh <env>`.
 
@@ -266,11 +270,11 @@ EOF
 
 ---
 
-### 4. `start_servers.yml` — Start Minecraft Servers
+### 4. `start_servers.yml` — Start Servers
 
 **Что это.** Запуск ранее остановленного стенда (например, после ручной остановки или перезагрузки машины).
 
-**Когда запускается.** Вручную: **Actions → Start Minecraft Servers → Run workflow**, `environment` = `dev` | `prod`.
+**Когда запускается.** Вручную: **Actions → Start Servers → Run workflow**, `environment` = `dev` | `prod`.
 
 **Что делает.** `bash ./scripts/start-all.sh <env>`:
 
@@ -579,7 +583,7 @@ ${VELOCITY_FORWARDING_SECRET}
 | Ветка | `dev` | `main` (чекаут на коммит из `origin/main`) |
 | Как обновляется | Автоматически: push в `dev` → `deploy_dev.yml` | Вручную: `release.yml` (merge-коммит `release: vX.Y.Z` из `dev` или merge хотфикса + тег) |
 | Версионирование | Нет тегов | Теги `vX.Y.Z`, changelog в аннотации тега |
-| Когда реально стартует новый код | Сразу, деплой сам делает рестарт | На ночном рестарте (04:45/05:00/05:15 МСК) или вручную через `Restart Minecraft Servers` |
+| Когда реально стартует новый код | Сразу, деплой сам делает рестарт | На ночном рестарте (04:45/05:00/05:15 МСК) или вручную через `Restart Servers` |
 | Overrides (`overrides/`) | **Применяются** | **Не применяются** |
 | Checker | **Работает**, падение = красный деплой | Не запускается |
 | Порты | 26511 / 26522 / 26565 | 25511 / 25522 / 25565 |
@@ -616,7 +620,7 @@ ${VELOCITY_FORWARDING_SECRET}
 ```mermaid
 flowchart LR
     A["feature/*"] -->|"PR / merge"| B["dev"]
-    B -->|"push"| C["Deploy Dev"]
+    B -->|"push"| C["Deploy DEV"]
     C --> D{"Checker OK?"}
     D -->|"нет"| B
     D -->|"да"| E["Проверка на dev"]
@@ -707,11 +711,11 @@ git merge --no-ff feature/<короткое-имя>
 git push origin dev
 ```
 
-`--no-ff` сохраняет историю фичи отдельной ветвью — так проще откатывать и читать changelog. Push в `dev` **автоматически** запускает `Deploy Dev Environment`.
+`--no-ff` сохраняет историю фичи отдельной ветвью — так проще откатывать и читать changelog. Push в `dev` **автоматически** запускает `Deploy DEV`.
 
 ### Шаг 7. Дождаться зелёного деплоя
 
-**Actions → Deploy Dev Environment**. Прогон занимает несколько минут (рестарт трёх серверов с ожиданием готовности).
+**Actions → Deploy DEV**. Прогон занимает несколько минут (рестарт трёх серверов с ожиданием готовности).
 
 Если упало на Checker'е:
 
@@ -728,7 +732,7 @@ git push origin dev
 
 ### Шаг 9. Запустить релиз
 
-**Actions → Release and Deploy PROD → Run workflow**:
+**Actions → Release PROD → Run workflow**:
 
 - `release_mode` = `release`;
 - `release_type` = `patch` (правки/фиксы), `minor` (новая функциональность), `major` (несовместимые изменения);
@@ -745,7 +749,7 @@ git push origin dev
 Обычный релиз **не перезапускает** серверы. Варианты:
 
 - **Ночью автоматически** — systemd-таймеры на сервере: лобби в 04:45, основной мир в 05:00, прокси в 05:15 МСК (см. `deploy/systemd/README.md`).
-- **Днём вручную** — **Actions → Restart Minecraft Servers**, `environment=prod`. При неудаче PROD сам откатится на последнюю успешную версию.
+- **Днём вручную** — **Actions → Restart Servers**, `environment=prod`. При неудаче PROD сам откатится на последнюю успешную версию.
 
 ### Шаг 11. Проверить PROD
 
@@ -804,7 +808,7 @@ git push -u origin hotfix/<короткое-имя>
 
 ### Шаг 3. Запустить release в режиме hotfix
 
-**Actions → Release and Deploy PROD → Run workflow**:
+**Actions → Release PROD → Run workflow**:
 
 | Параметр | Значение |
 |---|---|
@@ -862,7 +866,7 @@ git push origin dev
 - `restart.sh prod`, который `release.yml` запускает только при `release_mode=hotfix` и `restart_prod=true`.
 
 > [!NOTE]
-> Ручной рестарт через `Restart Minecraft Servers` **не** обновляет `.last-good-deploy-sha`: он только перезапускает стенд и при неудаче откатывается на уже подтверждённую версию. Подтверждение новой версии происходит либо ночным циклом, либо хотфиксом с `release_mode=hotfix` и `restart_prod=true` (в обычном релизе параметр `restart_prod` игнорируется).
+> Ручной рестарт через `Restart Servers` **не** обновляет `.last-good-deploy-sha`: он только перезапускает стенд и при неудаче откатывается на уже подтверждённую версию. Подтверждение новой версии происходит либо ночным циклом, либо хотфиксом с `release_mode=hotfix` и `restart_prod=true` (в обычном релизе параметр `restart_prod` игнорируется).
 
 ### Откат при неудачном рестарте
 
@@ -896,7 +900,7 @@ git revert -m 1 --no-edit <merge-sha>
 git push -u origin hotfix/revert-<что>
 ```
 
-Дальше — **Actions → Release and Deploy PROD**, `release_mode=hotfix`, `hotfix_branch=hotfix/revert-<что>`. Пайплайн создаст в `main` merge-коммит `release: vX.Y.Z (hotfix: hotfix/revert-<что>)`, поставит следующий patch-тег и синхронизирует `dev`. История не переписывается: откат виден отдельным коммитом, а после `sync-dev` ветка `main` остаётся предком `dev` (или равен ей), поэтому следующий обычный релиз снова проходит без конфликтов.
+Дальше — **Actions → Release PROD**, `release_mode=hotfix`, `hotfix_branch=hotfix/revert-<что>`. Пайплайн создаст в `main` merge-коммит `release: vX.Y.Z (hotfix: hotfix/revert-<что>)`, поставит следующий patch-тег и синхронизирует `dev`. История не переписывается: откат виден отдельным коммитом, а после `sync-dev` ветка `main` остаётся предком `dev` (или равен ей), поэтому следующий обычный релиз снова проходит без конфликтов.
 
 **Почему не `git reset`/`git push --force origin main`:**
 
@@ -952,11 +956,11 @@ bash ./scripts/restart-server.sh adjustment
 
 ### Перед релизом
 
-- [ ] `Deploy Dev Environment` зелёный
+- [ ] `Deploy DEV` зелёный
 - [ ] Фича проверена руками на dev-стенде
 - [ ] `main` является предком `dev` (иначе сначала синк)
 - [ ] Выбран корректный `release_type`
-- [ ] Решено, когда применять релиз: ночной рестарт или ручной `Restart Minecraft Servers` (в режиме `release` параметр `restart_prod` игнорируется)
+- [ ] Решено, когда применять релиз: ночной рестарт или ручной `Restart Servers` (в режиме `release` параметр `restart_prod` игнорируется)
 - [ ] Есть план проверки после рестарта
 
 ### Перед хотфиксом
