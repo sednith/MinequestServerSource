@@ -30,6 +30,8 @@ checker-report/
 /.last-good-deploy-sha.tmp
 /.scheduled-prod-restart-state
 /.scheduled-prod-restart-state.tmp
+/.scheduled-prod-restart-notify*
+/.scheduled-prod-restart-notified*
 
 # WORLD
 **/world/*

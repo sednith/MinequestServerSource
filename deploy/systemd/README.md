@@ -25,7 +25,8 @@
 
 | Файл | Назначение |
 |---|---|
-| `prod-restart@.service` | Шаблон юнита: запускает `scheduled-restart.sh %i` от `root` из `/home/server/prod` |
+| `prod-restart@.service` | Шаблон юнита: запускает `scheduled-restart.sh %i` от `root` из `/home/server/prod`; при падении дергает `OnFailure` |
+| `prod-restart-notify@.service` | Шаблон юнита уведомления: отправляет сообщение о падении этапа в Discord |
 | `prod-restart-adjustment.timer` | Таймер этапа `adjustment` (04:45 MSK) |
 | `prod-restart-playworld.timer` | Таймер этапа `playworld` (05:00 MSK) |
 | `prod-restart-velocity.timer` | Таймер этапа `velocity` (05:15 MSK) |
@@ -67,8 +68,9 @@ drop-in не перезаписывается.
 sudo bash deploy/systemd/install.sh --uninstall
 ```
 
-`--uninstall` не трогает данные PROD, `.scheduled-prod-restart-state` и NTP-конфиг
-(последний удаляется только вместе с `--ntp`). Drop-in'ы расписания, созданные
+`--uninstall` не трогает данные PROD, `.scheduled-prod-restart-state`,
+`/etc/minequest/notify.env` и NTP-конфиг (последний удаляется только вместе с
+`--ntp`). Drop-in'ы расписания, созданные
 `set-schedule.sh --apply`, удаляются вместе с таймерами — иначе они бы перебили
 расписание после переустановки.
 
@@ -153,6 +155,96 @@ timedatectl; timedatectl timesync-status
 
 Если таймер отработал, а этап не прошёл, смотрите `.scheduled-prod-restart-state`
 и журнал `scheduled-restart.sh`: при падении этапа PROD откатывается на last-good.
+
+## Уведомления в Discord
+
+При падении любого этапа ночного рестарта в Discord уходит одно сообщение:
+
+- номер сборки (`vX.Y.Z (короткий SHA)`) и версия, на которую откатились;
+- этап (`adjustment` / `playworld` / `velocity`) и русское название сервера;
+- причина из последней строки `[ERROR]` упавшего шага;
+- результат отката: успешен, ошибка или не выполнялся.
+
+Дедупликация: не больше одного сообщения за ночь. Маркер
+`.scheduled-prod-restart-notified` пишется только после успешной отправки,
+поэтому если Discord был недоступен в 05:00, следующий этап в 05:15 повторит
+попытку.
+
+Уведомление отправляет не только `scheduled-restart.sh`, но и `OnFailure=` в
+`prod-restart@.service` — это страховка на таймаут юнита и жёсткое падение
+скрипта, когда обычный обработчик не успевает выполниться.
+
+### Успешный рестарт
+
+Если ночью применился новый билд, после успешного этапа `velocity` уходит одно
+позитивное сообщение:
+
+```text
+✅ Ночной рестарт PROD выполнен
+Обновление: v1.1.9 (fa0fc9a) → v1.1.10 (6174477)
+Этапы: лобби ✅ · основной мир ✅ · прокси ✅
+06.11.2026 05:14 MSK · minequest
+```
+
+Условие — `target_sha != last_good_sha`, то есть сменился именно код в PROD, а
+не просто прошла очередная ночь. Если билд не менялся, сообщения нет. Если
+`velocity` пропущен из-за отсутствия изменений в `velocity/`, в строке этапов
+будет `⏭ (без изменений)`.
+
+Ограничение: успешное восстановление после сбоя на той же версии не
+отправляется, потому что SHA не менялся. Дедупликация успеха — отдельный маркер
+`.scheduled-prod-restart-notified-success`.
+
+### Настройка
+
+1. В Discord: **Edit Channel → Integrations → Webhooks → New Webhook → Copy
+   Webhook URL**.
+2. На сервере из корня чекаута:
+
+```bash
+sudo bash deploy/systemd/install.sh --setup-notify --test-notify
+```
+
+`--setup-notify` интерактивно запросит URL (ввод скрыт) и создаст
+`/etc/minequest/notify.env` с правами `600 root:root`. Существующий файл не
+перезаписывается. `--test-notify` отправит тестовое сообщение.
+
+Конфиг хранится вне репозитория и переживает `git checkout` при откате. Notifier
+дополнительно копируется в `/usr/local/lib/minequest/notify-discord.py`, чтобы
+сообщение об ошибке отката ушло даже после возврата на старый чекаут, где этого
+скрипта ещё нет.
+
+### Проверка без отправки
+
+```bash
+cd /home/server/prod
+python3 scripts/notify-discord.py --dry-run --stage playworld
+python3 scripts/notify-discord.py --dry-run --mode success
+python3 scripts/notify-discord.py --test
+```
+
+`--dry-run` печатает сообщение, но не отправляет и не пишет маркер.
+`--dry-run --mode success` использует payload последнего успешного цикла; если
+его ещё нет, команда сообщит «нет данных об успешном цикле».
+
+### Если сообщения не приходят
+
+```bash
+# последние запуски notifier'а
+journalctl -u 'prod-restart-notify@*' -n 50 --no-pager
+
+# проверка конфига (не печатает токен)
+sudo grep -c '^DISCORD_WEBHOOK_URL=https://discord' /etc/minequest/notify.env
+
+# прямой тест
+sudo python3 /usr/local/lib/minequest/notify-discord.py --test
+```
+
+Если `curl`/Python получают `403` от Discord, а с другим User-Agent запрос
+проходит — виноват фильтр Cloudflare; notifier уже отправляет
+`User-Agent: MinequestNotifier/1.0`. Если `403` остаётся и в теле ответа HTML
+«you have been blocked», Discord недоступен с этого сервера: нужен другой канал
+уведомлений (например, Telegram).
 
 ## Поведение при ребуте
 

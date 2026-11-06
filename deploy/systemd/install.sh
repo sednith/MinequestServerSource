@@ -5,8 +5,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SYSTEMD_DIR=/etc/systemd/system
 PROD_DIR=/home/server/prod
 NTP_DROPIN=/etc/systemd/timesyncd.conf.d/50-minequest.conf
+NOTIFY_ENV_DIR=/etc/minequest
+NOTIFY_ENV_FILE=/etc/minequest/notify.env
+NOTIFY_LIB_DIR=/usr/local/lib/minequest
+NOTIFY_SCRIPT="$NOTIFY_LIB_DIR/notify-discord.py"
 
-UNITS=(prod-restart@.service prod-restart-adjustment.timer prod-restart-playworld.timer prod-restart-velocity.timer)
+UNITS=(prod-restart@.service prod-restart-notify@.service prod-restart-adjustment.timer prod-restart-playworld.timer prod-restart-velocity.timer)
 TIMERS=(prod-restart-adjustment.timer prod-restart-playworld.timer prod-restart-velocity.timer)
 
 log() {
@@ -19,11 +23,73 @@ usage() {
 
 Установка systemd-таймеров ночного рестарта PROD (04:45 / 05:00 / 05:15 MSK).
 
-  (без флагов)  установить или обновить юниты и таймеры
-  --ntp         дополнительно настроить синхронизацию времени (NTP)
-  --uninstall   удалить таймеры; данные PROD, state-файл и NTP-конфиг не трогаются
-  -h, --help    показать эту справку
+  (без флагов)     установить или обновить юниты и таймеры
+  --ntp            дополнительно настроить синхронизацию времени (NTP)
+  --setup-notify   запросить Discord webhook URL и записать /etc/minequest/notify.env
+  --test-notify    отправить тестовое уведомление в Discord
+  --uninstall      удалить таймеры; данные PROD, state-файл, notify.env и NTP-конфиг не трогаются
+  -h, --help       показать эту справку
 EOF
+}
+
+install_notify_script() {
+    local source="$SCRIPT_DIR/../../scripts/notify-discord.py"
+
+    if [[ ! -f "$source" ]]; then
+        log "[ERROR] Не найден notifier: $source"
+        return 1
+    fi
+    install -d -m 0755 "$NOTIFY_LIB_DIR"
+    install -m 0755 "$source" "$NOTIFY_SCRIPT"
+    log "[OK] Установлен $NOTIFY_SCRIPT"
+}
+
+setup_notify() {
+    install -d -m 0700 "$NOTIFY_ENV_DIR"
+
+    if [[ -f "$NOTIFY_ENV_FILE" ]]; then
+        log "[INFO] $NOTIFY_ENV_FILE уже существует, оставляю как есть"
+        return 0
+    fi
+    if [[ ! -t 0 ]]; then
+        log "[ERROR] --setup-notify требует интерактивного терминала"
+        return 1
+    fi
+
+    local url
+    if ! read -rsp "Discord webhook URL: " url; then
+        log "[ERROR] Не удалось прочитать URL"
+        return 1
+    fi
+    printf '\n'
+    url="${url//$'\r'/}"
+    url="${url#"${url%%[![:space:]]*}"}"
+    url="${url%"${url##*[![:space:]]}"}"
+
+    if [[ ! "$url" =~ ^https://discord(app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9._-]+$ ]]; then
+        log "[ERROR] Строка не похожа на Discord webhook URL"
+        return 1
+    fi
+
+    ( umask 077; printf 'DISCORD_WEBHOOK_URL=%s\n' "$url" > "$NOTIFY_ENV_FILE" )
+    chmod 600 "$NOTIFY_ENV_FILE"
+    log "[OK] Записан $NOTIFY_ENV_FILE (права 600)"
+}
+
+test_notify() {
+    if [[ ! -f "$NOTIFY_SCRIPT" ]]; then
+        log "[ERROR] Notifier не установлен: $NOTIFY_SCRIPT"
+        return 1
+    fi
+    if [[ ! -s "$NOTIFY_ENV_FILE" ]]; then
+        log "[ERROR] Нет $NOTIFY_ENV_FILE; сначала выполните --setup-notify"
+        return 1
+    fi
+    if ! python3 "$NOTIFY_SCRIPT" --env-file "$NOTIFY_ENV_FILE" --test; then
+        log "[ERROR] Тестовое уведомление не отправлено"
+        return 1
+    fi
+    log "[OK] Тестовое уведомление отправлено"
 }
 
 timesyncd_available() {
@@ -97,6 +163,13 @@ install_units() {
             log "[ERROR] Не найден файл юнита: $SCRIPT_DIR/$unit"
             return 1
         fi
+    done
+
+    if ! install_notify_script; then
+        return 1
+    fi
+
+    for unit in "${UNITS[@]}"; do
         install -m 0644 "$SCRIPT_DIR/$unit" "$SYSTEMD_DIR/$unit"
         log "[OK] Установлен $SYSTEMD_DIR/$unit"
     done
@@ -110,6 +183,14 @@ install_units() {
 
     if [[ "$WITH_NTP" == "true" ]]; then
         configure_ntp
+    fi
+
+    if [[ "$SETUP_NOTIFY" == "true" ]]; then
+        setup_notify
+    fi
+
+    if [[ "$TEST_NOTIFY" == "true" ]]; then
+        test_notify
     fi
 
     log "[OK] Установлено. Проверьте NEXT в списке выше (должно быть 04:45 / 05:00 / 05:15 MSK)."
@@ -133,6 +214,9 @@ uninstall_units() {
         fi
     done
 
+    rm -f "$NOTIFY_SCRIPT"
+    rmdir "$NOTIFY_LIB_DIR" 2>/dev/null || true
+
     systemctl daemon-reload
 
     if [[ "$WITH_NTP" == "true" && -e "$NTP_DROPIN" ]]; then
@@ -150,11 +234,19 @@ uninstall_units() {
 
 MODE=install
 WITH_NTP=false
+SETUP_NOTIFY=false
+TEST_NOTIFY=false
 
 for arg in "$@"; do
     case "$arg" in
         --ntp)
             WITH_NTP=true
+            ;;
+        --setup-notify)
+            SETUP_NOTIFY=true
+            ;;
+        --test-notify)
+            TEST_NOTIFY=true
             ;;
         --uninstall)
             MODE=uninstall
