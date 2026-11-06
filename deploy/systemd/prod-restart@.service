@@ -2,6 +2,7 @@
 Description=Minequest PROD scheduled restart (%i)
 After=network-online.target
 Wants=network-online.target
+OnFailure=prod-restart-notify@%i.service
 
 [Service]
 Type=oneshot

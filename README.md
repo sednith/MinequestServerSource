@@ -88,6 +88,7 @@ EOF
 │   ├── restart.sh / restart-server.sh
 │   ├── scheduled-restart.sh
 │   ├── rollback-prod.sh
+│   ├── notify-discord.py       # уведомления о падении ночного рестарта
 │   ├── deploy-dev.sh
 │   ├── checker.sh
 │   ├── apply-overrides.sh / .py
@@ -99,8 +100,9 @@ EOF
 │       └── snapshot-configs.py
 ├── deploy/systemd/             # systemd-таймеры ночного рестарта PROD, 04:45 / 05:00 / 05:15 MSK
 │   ├── prod-restart@.service
+│   ├── prod-restart-notify@.service  # уведомление в Discord при падении этапа
 │   ├── prod-restart-{adjustment,playworld,velocity}.timer
-│   ├── install.sh              # установка, NTP, удаление
+│   ├── install.sh              # установка, NTP, notify, удаление
 │   └── set-schedule.sh         # смена расписания этапов
 ├── overrides/                  # локально, git-ignored
 ├── .checkerignore              # правила для Checker
@@ -308,7 +310,9 @@ EOF
 - проверяет, что PROD не изменился между этапами (HEAD и last-good SHA совпадают) — иначе стоп без отката чужого обновления;
 - не даёт выполнить один и тот же этап дважды за день;
 - при падении любого этапа откатывает PROD на last-good через `rollback-prod.sh` и помечает день как неуспешный;
-- пишет прогресс в `.scheduled-prod-restart-state` (git-ignored).
+- пишет прогресс в `.scheduled-prod-restart-state` (git-ignored);
+- при падении отправляет одно сообщение в Discord: сборка (`vX.Y.Z` + короткий SHA), этап и сервер, причина, результат отката. Настройка — `sudo bash deploy/systemd/install.sh --setup-notify --test-notify`, подробности в `deploy/systemd/README.md`. Дубли исключает маркер `.scheduled-prod-restart-notified`; страховка на таймаут юнита — `OnFailure=prod-restart-notify@%i.service`;
+- при смене билда и успешном завершении всех трёх этапов отправляет позитивное сообщение: старая и новая сборка, статусы этапов, время. Если билд не менялся, сообщения нет; дедупликация — отдельный маркер `.scheduled-prod-restart-notified-success`.
 
 **Как пользоваться.** Обычно — не трогать, работает само. Вручную (на сервере, от root):
 
@@ -338,6 +342,7 @@ systemctl list-timers 'prod-restart*'     # что и когда запусти�
 | `restart-server.sh <server>` | Рестарт одного сервера: команда в FIFO → ожидание остановки (30 с) → ожидание нового PID → ожидание маркера готовности (Velocity 120 с, Paper 300 с). | `restart.sh`, `scheduled-restart.sh` |
 | `scheduled-restart.sh <stage>` | Один этап ночного рестарта: state-файл, защита от повторного запуска, откат при ошибке, обновление last-good SHA. | `prod-restart@<stage>.service` (systemd) |
 | `rollback-prod.sh` | Откат PROD на SHA из `.last-good-deploy-sha`, рендер секретов, рестарт. Копирует скрипты в `.rollback-scripts.<pid>`, чтобы пережить checkout старого дерева. | `restart.sh`, `scheduled-restart.sh` |
+| `notify-discord.py` | Отправка уведомлений о ночном рестарте в Discord webhook: падения (сборка, этап, причина, результат отката) и успех при смене билда. Дедупликация по дате, `--dry-run`, `--test`, `--mode success`. | `scheduled-restart.sh`, `prod-restart-notify@.service` |
 | `deploy-dev.sh` | Полный dev-деплой: sync → overrides → commit B → secrets → baseline → рестарт → Checker → cleanup. | `deploy_dev.yml` |
 | `checker.sh` | Сравнивает состояние после запуска с зафиксированным baseline, применяет `.checkerignore`, пишет отчёты. | `deploy-dev.sh` |
 | `apply-overrides.sh` | Обёртка: запускает `apply-overrides.py` из `.venv`. | `deploy-dev.sh`, `restart.sh`, `start-all.sh` |
