@@ -6,7 +6,8 @@ OnFailure=prod-restart-notify@%i.service
 
 [Service]
 Type=oneshot
-User=root
+User=server
+EnvironmentFile=-/etc/minequest/notify.env
 WorkingDirectory=/home/server/prod
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/bin/bash /home/server/prod/scripts/scheduled-restart.sh %i

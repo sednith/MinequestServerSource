@@ -25,8 +25,8 @@
 
 | Файл | Назначение |
 |---|---|
-| `prod-restart@.service` | Шаблон юнита: запускает `scheduled-restart.sh %i` от `root` из `/home/server/prod`; при падении дергает `OnFailure` |
-| `prod-restart-notify@.service` | Шаблон юнита уведомления: отправляет сообщение о падении этапа в Discord |
+| `prod-restart@.service` | Шаблон юнита: запускает `scheduled-restart.sh %i` от `server` из `/home/server/prod`; получает webhook через `EnvironmentFile`; при падении дергает `OnFailure` |
+| `prod-restart-notify@.service` | Шаблон юнита уведомления: страховочный `OnFailure`-обработчик от `root`, читает `notify.env` напрямую |
 | `prod-restart-adjustment.timer` | Таймер этапа `adjustment` (04:45 MSK) |
 | `prod-restart-playworld.timer` | Таймер этапа `playworld` (05:00 MSK) |
 | `prod-restart-velocity.timer` | Таймер этапа `velocity` (05:15 MSK) |
@@ -209,6 +209,12 @@ sudo bash deploy/systemd/install.sh --setup-notify --test-notify
 `/etc/minequest/notify.env` с правами `600 root:root`. Существующий файл не
 перезаписывается. `--test-notify` отправит тестовое сообщение.
 
+Основной юнит работает от `server` и получает URL через
+`EnvironmentFile=-/etc/minequest/notify.env` — systemd читает файл как root и
+передаёт `DISCORD_WEBHOOK_URL` процессу. Поэтому права `600 root:root` менять не
+нужно, а `server` не читает файл напрямую. Страховочный
+`prod-restart-notify@.service` остаётся от `root` и читает файл сам.
+
 Конфиг хранится вне репозитория и переживает `git checkout` при откате. Notifier
 дополнительно копируется в `/usr/local/lib/minequest/notify-discord.py`, чтобы
 сообщение об ошибке отката ушло даже после возврата на старый чекаут, где этого
@@ -264,16 +270,18 @@ screen-супервизоры (`startserver.sh`) после перезагруз
 этапы не знают друг о друге. Возможна гонка за FIFO/PID, а также замена скриптов
 в `/home/server/prod` во время выполнения этапа.
 
-## Переход с root на отдельного пользователя
+## Пользователь сервиса
 
-Сейчас `prod-restart@.service` работает от `root`, потому что серверы запущены
-от `root`. Позже:
+`prod-restart@.service` работает от `server`: от этого пользователя запущены
+Java-процессы, ему принадлежат `/home/server/prod`, `.git`, state-файлы, FIFO и
+`secrets`. `server` имеет `safe.directory` для репозитория, поэтому git-команды
+ночного рестарта работают без root.
 
-1. поменять `User=` в `prod-restart@.service` и переустановить юнит;
-2. перезапустить супервизоры `startserver.sh` под этим пользователем;
-3. сделать `chown -R <user> /home/server/prod`;
-4. убедиться, что `secrets` читается этим пользователем (600 на владельца) —
-   иначе не сработают `render-secrets.py` и `server_pid_is_valid`.
+Webhook остаётся в `/etc/minequest/notify.env` с правами `600 root:root`.
+Основной юнит получает `DISCORD_WEBHOOK_URL` через `EnvironmentFile`, а
+`prod-restart-notify@.service` — страховочный обработчик от `root` — читает файл
+напрямую. После изменения юнита обязателен `systemctl daemon-reload`; `install.sh`
+делает это автоматически.
 
 ## Откат
 
