@@ -388,6 +388,7 @@ systemctl list-timers 'prod-restart*'     # что и когда запусти�
 | Опция | Что делает |
 |---|---|
 | `--paper` | не отправлять на velocity |
+| `--save` | `save-all flush` на все Paper-серверы (velocity пропускается) |
 | `--dry-run` | показать цели и команду, ничего не отправляя |
 | `-o`, `--output` | показать новые строки из `logs/latest.log` после отправки |
 | `--force` | разрешить `save-off` (по умолчанию заблокирован) |
@@ -397,6 +398,8 @@ systemctl list-timers 'prod-restart*'     # что и когда запусти�
 ### Примеры
 
 ```bash
+msc --save                        # save-all flush на все 4 Paper-сервера
+msc -p --save -o                  # то же только prod + показать «Saved the game»
 msc -pv list                      # prod / velocity
 msc -pa save-all flush            # сохранить лобби prod
 msc -p --paper save-all flush     # весь prod, без velocity
@@ -405,6 +408,17 @@ msc -ap tps                       # все prod
 msc -a --dry-run stop             # показать цели, ничего не отправлять
 msc -pv -- list                   # команда после разделителя
 ```
+
+### Сохранение мира: `--save`
+
+`msc --save` — готовое действие, а не модификатор: команда сама подставляет `save-all flush` и отправляет её на все четыре Paper-сервера (prod и dev). `flush` дожидается записи на диск, поэтому в логе появляется `Saved the game` — это видно через `-o`.
+
+Velocity в `--save` не участвует и печатается как пропуск: у прокси нет миров и нет команды сохранения. Встроенные команды Velocity — только `glist`, `send`, `server`, `shutdown` и `velocity` (`info`/`heap`/`dump`/`plugins`/`reload`); сохранять там нечего.
+
+- `msc -p --save` / `msc -d --save` — сузить до одного стенда.
+- `msc --save --dry-run` — показать 4 цели и 2 пропуска, ничего не отправляя.
+- `msc --save list` — ошибка `rc=2`: `--save` нельзя комбинировать с явной командой.
+- `msc -v --save` — ошибка `rc=2`: velocity нечего сохранять.
 
 ### Поведение
 
