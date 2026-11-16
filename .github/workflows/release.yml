@@ -172,7 +172,7 @@ jobs:
             --invert-grep -i --grep='\[internal\]' --grep='\[no-changelog\]' \
             --pretty=format:'- %s' || true)"
           if [[ -z "$CHANGELOG" ]]; then
-            CHANGELOG='- Мелкие правки и улучшения'
+            CHANGELOG='- chore: мелкие правки и улучшения'
           fi
           git tag -a "$NEW_TAG" "$NEW_COMMIT" -m "Release $NEW_TAG ($VERSION_TYPE)" -m "$CHANGELOG"
 

@@ -221,7 +221,7 @@ EOF
    - Проверяет, что такого тега ещё нет (локально и на origin), иначе аварийно выходит **до** пуша.
    - Если в источнике нет новых коммитов (`dev` уже равен `main`), падает с `[ERROR] origin/dev не содержит новых коммитов относительно main`; тег не создаётся, номер версии не расходуется.
    - Создаёт merge-коммит `release: vX.Y.Z` (для хотфикса — `release: vX.Y.Z (hotfix: <ветка>)`) через `git merge-tree --write-tree` + `git commit-tree`, то есть **без checkout и без рабочего дерева**: релиз не зависит от CRLF/EOL-состояния файлов в копии раннера.
-   - Собирает changelog из `git log LATEST_TAG..<merge-commit>` с `--no-merges` (merge-коммиты в changelog не попадают), выбрасывая коммиты с метками `[internal]` и `[no-changelog]` (поиск по всему сообщению, без учёта регистра). Если ничего не осталось — пишет «Мелкие правки и улучшения».
+   - Собирает changelog из `git log LATEST_TAG..<merge-commit>` с `--no-merges` (merge-коммиты в changelog не попадают), выбрасывая коммиты с метками `[internal]` и `[no-changelog]` (поиск по всему сообщению, без учёта регистра). Если ничего не осталось — пишет «chore: мелкие правки и улучшения».
    - Создаёт annotated-тег `vX.Y.Z` на merge-коммите с changelog в сообщении и делает **атомарный** `push origin <sha>:main refs/tags/vX.Y.Z`.
 2. **`Deploy PROD`** (job `deploy`, SSH-шаг, `needs: publish`). В UI job называется `Deploy PROD — vX.Y.Z`: версия берётся из output'а `publish`. При перезапуске одного этого job'а тег в контексте отсутствует, поэтому он называется просто `Deploy PROD`.
    - **Этап 1/2:** `git fetch origin --tags`, `git checkout -f -B main <origin/main>`, `git reset --hard`. Код на PROD обновлён.
