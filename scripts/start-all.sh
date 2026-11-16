@@ -12,6 +12,9 @@ fi
 SERVER_START_ORDER=(playworld adjustment velocity)
 START_TIMEOUT=300
 CHECK_INTERVAL=2
+# Сколько секунд после запуска считаем невалидный PID-файл переходным
+# состоянием (супервизор мог ещё не перезаписать файл, а java — не сделать exec).
+PID_VALIDATE_GRACE=10
 TARGET_ENV="${1:-}"
 SESSION_PREFIX=""
 
@@ -184,6 +187,8 @@ start_and_wait() {
             log "[ERROR] $server уже работает (PID $pid) без Screen-сессии с именем $server; второй экземпляр не запускаю"
             return 1
         fi
+        log "[INFO] Удаляю устаревший PID-файл $server (PID $pid)"
+        rm -f "$server_dir/.server.pid"
     fi
 
     if [[ -f "$log_file" ]]; then
@@ -217,6 +222,11 @@ start_and_wait() {
         if [[ -s "$server_dir/.server.pid" ]]; then
             pid="$(cat "$server_dir/.server.pid")"
             if ! server_pid_is_valid "$pid" "$server_dir"; then
+                if (( SECONDS - started_seconds < PID_VALIDATE_GRACE )); then
+                    sleep "$CHECK_INTERVAL"
+                    ((elapsed += CHECK_INTERVAL))
+                    continue
+                fi
                 log "[ERROR] PID сервера $server не соответствует ожидаемому процессу"
                 [[ -f "$log_file" ]] && tail -n 30 "$log_file"
                 return 1
