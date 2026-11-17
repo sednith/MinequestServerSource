@@ -1,0 +1,49 @@
+# ============================================================
+#  MinequestCommandsHide — скрытие команд по группам LuckPerms
+# ============================================================
+#
+#  mode:
+#    whitelist — игрок видит и может выполнять ТОЛЬКО команды,
+#                перечисленные в его группах (рекомендуется).
+#    blacklist — игрок видит и может выполнять всё, КРОМЕ команд,
+#                перечисленных в его группах.
+#
+#  Ключ группы = имя группы в LuckPerms. Наследованные группы
+#  учитываются автоматически, группа default применяется всегда.
+#
+#  Права:
+#    mch.bypass   или minequestcommandshide.bypass — видеть и уметь всё
+#    mch.reload   или minequestcommandshide.reload — /mch reload
+#
+#  Команда: /mch reload (алиас /minequestcommandshide reload)
+
+mode: whitelist
+
+# Убирать дубли вида plugin:command, если рядом есть обычная команда.
+remove-plugin-prefix: true
+
+# /help перехватывается прокси и показывает только реально видимые команды.
+help:
+  enabled: true
+  header: '&6Доступные команды:'
+  format: '&e/%s'
+  hover: '&7Нажмите, чтобы выполнить'
+  footer: ''
+  page-format: '&7Страница {page}/{pages}'
+  page-size: 12
+
+messages:
+  # Текст при попытке выполнить скрытую команду.
+  deny: '&fНеизвестная или неполная команда!'
+  no-permission: '&cНедостаточно прав.'
+  reload-success: '&aКонфиг MinequestCommandsHide перезагружен.'
+  reload-failure: '&cНе удалось загрузить конфиг: %s'
+  reload-usage: '&eИспользование: /mch reload'
+  help-empty: '&7Нет доступных команд.'
+
+groups:
+  default:
+    commands:
+  player:
+    commands:
+      - 'list'
