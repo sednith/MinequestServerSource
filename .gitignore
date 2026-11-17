@@ -62,3 +62,18 @@ __pycache__/
 /velocity/plugins/smartrejoin/player_data.db
 /velocity/plugins/smartrejoin/player_data.db-shm
 /velocity/plugins/smartrejoin/player_data.db-wal
+
+# LuckPerms: downloaded runtime libraries
+**/plugins/LuckPerms/libs/
+**/plugins/luckperms/libs/
+
+# LuckPerms: auto-downloaded & auto-updated translation cache
+**/plugins/LuckPerms/translations/repository/
+**/plugins/luckperms/translations/repository/
+
+# LuckPerms: local H2 database (temporary, moving to DBMS)
+**/plugins/LuckPerms/*.mv.db*
+**/plugins/luckperms/*.mv.db*
+
+# Per-installation web editor key
+**/editor-keystore.json
